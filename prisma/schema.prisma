@@ -192,6 +192,10 @@ model Product {
   // Populated by the LLM enrichment step: canonical product title, search
   // queries, and a generation prompt.
   enrichment   Json?
+  // Product details discovered during lookup (title, brand, model, category,
+  // description). This is what turns a bare column of barcodes into a real
+  // catalog, so it is persisted and shipped in the export.
+  facts        Json?
   outputName   String?
   processedAt  DateTime?
   createdAt    DateTime      @default(now())

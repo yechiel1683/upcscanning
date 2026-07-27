@@ -1,5 +1,6 @@
 import { env } from '@/lib/env';
 import type { ParsedProduct, ProductEnrichment } from '@/lib/types';
+import { fetchJson } from '@/server/lib/http';
 
 /**
  * Product understanding.
@@ -191,39 +192,33 @@ interface LlmResponse {
   requiredKeywords?: string[];
 }
 
-export async function enrichProduct(input: EnrichmentInput): Promise<ProductEnrichment> {
+/**
+ * Which model service does the identification.
+ *
+ * Whichever key is present gets used; Anthropic wins when both are set, purely
+ * because it is the more explicit choice. The point is that a single key of
+ * either kind is enough — nobody should have to open a second account to get
+ * past heuristics.
+ */
+export function understandingProvider(): { provider: 'anthropic' | 'openai' | 'heuristic'; model: string | null } {
   const config = env();
+  if (config.ANTHROPIC_API_KEY) return { provider: 'anthropic', model: config.ANTHROPIC_MODEL };
+  if (config.OPENAI_API_KEY) return { provider: 'openai', model: config.OPENAI_TEXT_MODEL };
+  return { provider: 'heuristic', model: null };
+}
+
+export async function enrichProduct(input: EnrichmentInput): Promise<ProductEnrichment> {
   const fallback = heuristicEnrichment(input);
-  if (!config.ANTHROPIC_API_KEY) return fallback;
+  const { provider } = understandingProvider();
+  if (provider === 'heuristic') return fallback;
+
+  const userContent = describeInput(input);
 
   try {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
-
-    const userContent = [
-      `Product name: ${input.name}`,
-      input.brand ? `Brand column: ${input.brand}` : null,
-      input.model ? `Model column: ${input.model}` : null,
-      input.upc ? `UPC/barcode: ${input.upc}` : null,
-      input.sku ? `SKU: ${input.sku}` : null,
-      input.category ? `Category: ${input.category}` : null,
-      input.description ? `Description: ${truncate(input.description, 800)}` : null,
-      input.specifications ? `Specifications: ${truncate(input.specifications, 500)}` : null,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    const message = await client.messages.create({
-      model: config.ANTHROPIC_MODEL,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userContent }],
-    });
-
-    const text = message.content
-      .map((block) => (block.type === 'text' ? block.text : ''))
-      .join('')
-      .trim();
+    const text =
+      provider === 'anthropic'
+        ? await askAnthropic(userContent)
+        : await askOpenAi(userContent);
 
     const parsed = parseJsonObject(text);
     if (!parsed) return fallback;
@@ -234,6 +229,70 @@ export async function enrichProduct(input: EnrichmentInput): Promise<ProductEnri
     // degrades match quality but must not fail the batch.
     return fallback;
   }
+}
+
+function describeInput(input: EnrichmentInput): string {
+  return [
+    `Product name: ${input.name}`,
+    input.brand ? `Brand column: ${input.brand}` : null,
+    input.model ? `Model column: ${input.model}` : null,
+    input.upc ? `UPC/barcode: ${input.upc}` : null,
+    input.sku ? `SKU: ${input.sku}` : null,
+    input.category ? `Category: ${input.category}` : null,
+    input.description ? `Description: ${truncate(input.description, 800)}` : null,
+    input.specifications ? `Specifications: ${truncate(input.specifications, 500)}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+async function askAnthropic(userContent: string): Promise<string> {
+  const config = env();
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: config.ANTHROPIC_API_KEY });
+
+  const message = await client.messages.create({
+    model: config.ANTHROPIC_MODEL,
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: 'user', content: userContent }],
+  });
+
+  return message.content
+    .map((block) => (block.type === 'text' ? block.text : ''))
+    .join('')
+    .trim();
+}
+
+interface OpenAiChatResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: { message?: string };
+}
+
+async function askOpenAi(userContent: string): Promise<string> {
+  const config = env();
+
+  const data = await fetchJson<OpenAiChatResponse>('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${config.OPENAI_API_KEY}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: config.OPENAI_TEXT_MODEL,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: userContent },
+      ],
+      // Guarantees parseable output instead of hoping the model behaves.
+      response_format: { type: 'json_object' },
+      max_tokens: 1024,
+    }),
+    timeoutMs: 45_000,
+  });
+
+  if (data.error?.message) throw new Error(data.error.message);
+  return data.choices?.[0]?.message?.content?.trim() ?? '';
 }
 
 function mergeEnrichment(parsed: LlmResponse, fallback: ProductEnrichment): ProductEnrichment {

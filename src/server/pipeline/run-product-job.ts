@@ -1,6 +1,11 @@
 import { BatchStatus, ImageSourceKind, LedgerReason, ProductStatus } from '@prisma/client';
 
-import { DEFAULT_RENDER_OPTIONS, renderOptionsSchema, type ProductEnrichment } from '@/lib/types';
+import {
+  DEFAULT_RENDER_OPTIONS,
+  renderOptionsSchema,
+  type ProductEnrichment,
+  type ProductFacts,
+} from '@/lib/types';
 import { prisma } from '@/server/db';
 import { buildFileName } from '@/server/images/naming';
 import { keys, storage } from '@/server/storage';
@@ -93,13 +98,23 @@ export async function runProductJob(productId: string): Promise<JobResult> {
     }
 
     if (outcome.status === 'failed') {
-      await failProduct(productId, product.batchId, outcome.reason, outcome.enrichment);
+      await failProduct(
+        productId,
+        product.batchId,
+        outcome.reason,
+        outcome.enrichment,
+        outcome.facts,
+      );
       return { productId, status: 'failed', message: outcome.reason };
     }
 
+    // A row that arrived as nothing but a barcode now has a real name, so the
+    // file it produces should carry that name rather than "Product_03600…".
+    const resolved = applyFacts(product, outcome.facts);
+
     const fileName = buildFileName({
-      name: product.name,
-      brand: product.brand,
+      name: resolved.name,
+      brand: resolved.brand,
       sku: product.sku,
       upc: product.upc,
       rowNumber: product.rowNumber,
@@ -145,6 +160,14 @@ export async function runProductJob(productId: string): Promise<JobResult> {
           processedAt: new Date(),
           errorMessage: null,
           enrichment: outcome.enrichment as unknown as object,
+          ...(outcome.facts ? { facts: outcome.facts as unknown as object } : {}),
+          // Backfill only what the upload did not supply, so a discovered name
+          // never overwrites what the customer explicitly told us.
+          name: resolved.name,
+          brand: resolved.brand,
+          model: resolved.model,
+          category: resolved.category,
+          description: resolved.description,
         },
       });
 
@@ -187,6 +210,7 @@ async function failProduct(
   batchId: string,
   message: string,
   enrichment: ProductEnrichment | null,
+  facts?: ProductFacts,
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.product.update({
@@ -196,6 +220,8 @@ async function failProduct(
         errorMessage: message.slice(0, 1000),
         processedAt: new Date(),
         ...(enrichment ? { enrichment: enrichment as unknown as object } : {}),
+        // Even a failed product is worth more with its details filled in.
+        ...(facts ? { facts: facts as unknown as object } : {}),
       },
     });
     await tx.batch.update({
@@ -235,6 +261,45 @@ export async function finaliseBatchIfDone(batchId: string): Promise<void> {
       completedAt: new Date(),
     },
   });
+}
+
+interface ResolvedFields {
+  name: string;
+  brand: string | null;
+  model: string | null;
+  category: string | null;
+  description: string | null;
+}
+
+/**
+ * A name we generated from a barcode ("Product 036000291452") is a placeholder,
+ * not information. When a lookup tells us what the product really is, that wins
+ * — but only over a placeholder or a blank, never over a supplier's own words.
+ */
+export function applyFacts(
+  product: {
+    name: string;
+    brand: string | null;
+    model: string | null;
+    category: string | null;
+    description: string | null;
+    upc: string | null;
+    sku: string | null;
+  },
+  facts?: ProductFacts,
+): ResolvedFields {
+  const placeholder =
+    (product.upc !== null && product.name.trim() === `Product ${product.upc}`) ||
+    (product.sku !== null && product.name.trim() === `Product ${product.sku}`) ||
+    /^product\s+[\d-]+$/i.test(product.name.trim());
+
+  return {
+    name: placeholder && facts?.title ? facts.title : product.name,
+    brand: product.brand ?? facts?.brand ?? null,
+    model: product.model ?? facts?.model ?? null,
+    category: product.category ?? facts?.category ?? null,
+    description: product.description ?? facts?.description ?? null,
+  };
 }
 
 function readEnrichment(value: unknown): ProductEnrichment | null {

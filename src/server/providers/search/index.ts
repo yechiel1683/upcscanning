@@ -1,75 +1,97 @@
-import type { SearchCandidate } from '@/lib/types';
-import { goUpcProvider, openFoodFactsProvider, upcItemDbProvider } from './barcode';
-import type { SearchContext, SearchProvider } from './types';
+import { mergeFacts, type ProductFacts, type SearchCandidate } from '@/lib/types';
+import {
+  goUpcProvider,
+  openBeautyFactsProvider,
+  openFoodFactsProvider,
+  openPetFoodFactsProvider,
+  openProductsFactsProvider,
+  upcItemDbProvider,
+} from './barcode';
+import { openAiWebProvider } from './openai-web';
+import type { ProviderTier, SearchContext, SearchProvider } from './types';
 import { bingImageProvider, directUrlProvider, googleCseProvider, serpApiProvider } from './web';
 
-export type { SearchContext, SearchProvider } from './types';
+export type { ProviderTier, SearchContext, SearchProvider } from './types';
 export { directUrlProvider, isTrustedRetailer } from './web';
 
 /**
- * Ordered by trust. The pipeline walks this list and stops early once it has a
- * confident match, so the cheap, exact sources must come first.
+ * The search tiers, each ordered by trust.
+ *
+ * Barcode providers run first and separately, because they answer a different
+ * question: not "where is a picture" but "what is this thing". Their answer
+ * feeds the web tier's queries, which is why a bare column of numbers can come
+ * back with names, brands, models — and the right photograph.
  */
-const REGISTRY: SearchProvider[] = [
+const BARCODE_PROVIDERS: SearchProvider[] = [
   upcItemDbProvider,
   goUpcProvider,
   openFoodFactsProvider,
+  openBeautyFactsProvider,
+  openProductsFactsProvider,
+  openPetFoodFactsProvider,
+];
+
+const WEB_PROVIDERS: SearchProvider[] = [
+  openAiWebProvider,
   serpApiProvider,
   googleCseProvider,
   bingImageProvider,
 ];
 
-export function availableProviders(): SearchProvider[] {
-  return REGISTRY.filter((provider) => provider.isConfigured());
+const ALL_PROVIDERS = [...BARCODE_PROVIDERS, ...WEB_PROVIDERS];
+
+export function availableProviders(tier?: ProviderTier): SearchProvider[] {
+  const pool = tier === 'barcode' ? BARCODE_PROVIDERS : tier === 'web' ? WEB_PROVIDERS : ALL_PROVIDERS;
+  return pool.filter((provider) => provider.isConfigured());
 }
 
-/** Names of every provider that could run, for the dashboard's status panel. */
-export function providerStatus(): Array<{ name: string; configured: boolean; kind: string }> {
-  return REGISTRY.map((provider) => ({
+/** Provider inventory for the dashboard's status panel. */
+export function providerStatus(): Array<{
+  name: string;
+  configured: boolean;
+  kind: ProviderTier;
+  keyless: boolean;
+}> {
+  return ALL_PROVIDERS.map((provider) => ({
     name: provider.name,
     configured: provider.isConfigured(),
-    kind: provider.baseConfidence >= 0.85 ? 'barcode' : 'web',
+    kind: provider.tier,
+    // The honest answer to "what do I get before I pay anyone".
+    keyless: provider.keyless,
   }));
 }
 
-export interface GatherOptions {
-  /** Include this URL as the first candidate (the spreadsheet's own column). */
-  directImageUrl?: string | null;
-  /** Stop gathering once this many candidates are collected. */
-  limit?: number;
+export interface TierResult {
+  candidates: SearchCandidate[];
+  facts?: ProductFacts;
+  errors: Array<{ provider: string; message: string }>;
 }
 
 /**
- * Collect candidates across providers.
+ * Resolve a barcode to product facts and any images the databases hold.
  *
- * Providers are queried in trust order rather than in parallel: a barcode hit
- * usually ends the search, and skipping the paid web-search calls for those
- * rows is the difference between a viable unit cost and an unviable one on a
- * 1,000-product batch.
+ * Unlike the web tier this does not stop at the first hit: a second database
+ * often fills in a model number or category the first one lacked, and the
+ * lookups are cheap.
  */
-export async function gatherCandidates(
-  context: SearchContext,
-  options: GatherOptions = {},
-): Promise<{ candidates: SearchCandidate[]; errors: Array<{ provider: string; message: string }> }> {
-  const limit = options.limit ?? context.limit;
+export async function lookupBarcode(context: SearchContext): Promise<TierResult> {
   const candidates: SearchCandidate[] = [];
   const errors: Array<{ provider: string; message: string }> = [];
-  const seenUrls = new Set<string>();
+  const facts: Array<ProductFacts | undefined> = [];
+  const seen = new Set<string>();
 
-  const providers: SearchProvider[] = [];
-  if (options.directImageUrl) providers.push(directUrlProvider(options.directImageUrl));
-  providers.push(...availableProviders());
-
-  for (const provider of providers) {
-    if (candidates.length >= limit) break;
+  for (const provider of availableProviders('barcode')) {
     if (!provider.supports(context)) continue;
+    // Once several databases agree and we have plenty of pictures, stop.
+    if (candidates.length >= context.limit && facts.filter(Boolean).length >= 2) break;
 
     try {
-      const found = await provider.search({ ...context, limit: limit - candidates.length });
-      for (const candidate of found) {
+      const result = await provider.search({ ...context, limit: context.limit });
+      facts.push(result.facts);
+      for (const candidate of result.candidates) {
         const key = candidate.sourceUrl.split('?')[0] ?? candidate.sourceUrl;
-        if (seenUrls.has(key)) continue;
-        seenUrls.add(key);
+        if (seen.has(key)) continue;
+        seen.add(key);
         candidates.push(candidate);
       }
     } catch (error) {
@@ -80,5 +102,50 @@ export async function gatherCandidates(
     }
   }
 
-  return { candidates, errors };
+  return { candidates, facts: mergeFacts(facts), errors };
+}
+
+export interface WebSearchOptions {
+  /** Include this URL as the first candidate (the spreadsheet's own column). */
+  directImageUrl?: string | null;
+  limit?: number;
+}
+
+/** Search the open web for pictures. Stops as soon as it has enough. */
+export async function searchWeb(
+  context: SearchContext,
+  options: WebSearchOptions = {},
+): Promise<TierResult> {
+  const limit = options.limit ?? context.limit;
+  const candidates: SearchCandidate[] = [];
+  const errors: Array<{ provider: string; message: string }> = [];
+  const facts: Array<ProductFacts | undefined> = [];
+  const seen = new Set<string>();
+
+  const providers: SearchProvider[] = [];
+  if (options.directImageUrl) providers.push(directUrlProvider(options.directImageUrl));
+  providers.push(...availableProviders('web'));
+
+  for (const provider of providers) {
+    if (candidates.length >= limit) break;
+    if (!provider.supports(context)) continue;
+
+    try {
+      const result = await provider.search({ ...context, limit: limit - candidates.length });
+      facts.push(result.facts);
+      for (const candidate of result.candidates) {
+        const key = candidate.sourceUrl.split('?')[0] ?? candidate.sourceUrl;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push(candidate);
+      }
+    } catch (error) {
+      errors.push({
+        provider: provider.name,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { candidates, facts: mergeFacts(facts), errors };
 }

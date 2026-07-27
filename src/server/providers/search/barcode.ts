@@ -1,12 +1,24 @@
 import { env } from '@/lib/env';
-import type { SearchCandidate } from '@/lib/types';
+import type { ProductFacts, SearchCandidate, SearchResult } from '@/lib/types';
 import { fetchJson, withRetry } from '@/server/lib/http';
 import type { SearchContext, SearchProvider } from './types';
 
 /**
- * Barcode databases. These are the highest-value sources in Workflow A: a GTIN
- * is an exact key, so a hit is the actual product rather than a visual guess.
+ * Barcode databases.
+ *
+ * These are the highest-value sources: a GTIN is an exact key, so a hit is the
+ * actual product rather than a visual guess. They return two things — pictures,
+ * and facts about the product — and for a customer who uploaded nothing but a
+ * column of barcodes, the facts matter as much as the pictures.
  */
+
+function hasBarcode(context: SearchContext): boolean {
+  return Boolean(context.upc && /^\d{8,14}$/.test(context.upc));
+}
+
+// ---------------------------------------------------------------------------
+// UPCitemdb — broad general-merchandise coverage
+// ---------------------------------------------------------------------------
 
 interface UpcItemDbResponse {
   code?: string;
@@ -14,25 +26,27 @@ interface UpcItemDbResponse {
     title?: string;
     brand?: string;
     model?: string;
+    category?: string;
+    description?: string;
     images?: string[];
   }>;
 }
 
 export const upcItemDbProvider: SearchProvider = {
   name: 'upcitemdb',
+  tier: 'barcode',
   baseConfidence: 0.95,
+  keyless: true,
 
   isConfigured() {
-    // The trial tier works without a key (rate limited to ~100 requests/day),
+    // The trial tier works without a key (rate limited to ~100 lookups/day),
     // so this provider is always available; a key just raises the ceiling.
     return true;
   },
 
-  supports(context) {
-    return Boolean(context.upc && /^\d{8,14}$/.test(context.upc));
-  },
+  supports: hasBarcode,
 
-  async search(context) {
+  async search(context): Promise<SearchResult> {
     const config = env();
     const base = config.UPCITEMDB_API_KEY
       ? 'https://api.upcitemdb.com/prod/v1/lookup'
@@ -48,45 +62,67 @@ export const upcItemDbProvider: SearchProvider = {
       fetchJson<UpcItemDbResponse>(`${base}?upc=${encodeURIComponent(context.upc!)}`, { headers }),
     );
 
+    const item = data.items?.[0];
     const candidates: SearchCandidate[] = [];
-    for (const item of data.items ?? []) {
-      for (const image of item.images ?? []) {
+
+    for (const entry of data.items ?? []) {
+      for (const image of entry.images ?? []) {
         if (!image) continue;
         candidates.push({
           provider: 'upcitemdb',
           sourceUrl: image,
-          title: item.title,
+          title: entry.title,
           providerConfidence: 0.95,
         });
-        if (candidates.length >= context.limit) return candidates;
+        if (candidates.length >= context.limit) break;
       }
+      if (candidates.length >= context.limit) break;
     }
-    return candidates;
+
+    return {
+      candidates,
+      facts: item
+        ? cleanFacts({
+            title: item.title,
+            brand: item.brand,
+            model: item.model,
+            category: item.category,
+            description: item.description,
+            source: 'upcitemdb',
+          })
+        : undefined,
+    };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Go-UPC — paid, very broad
+// ---------------------------------------------------------------------------
 
 interface GoUpcResponse {
   product?: {
     name?: string;
     description?: string;
     brand?: string;
+    category?: string;
     imageUrl?: string;
+    specs?: Array<[string, string]>;
   };
 }
 
 export const goUpcProvider: SearchProvider = {
   name: 'go-upc',
+  tier: 'barcode',
   baseConfidence: 0.93,
+  keyless: false,
 
   isConfigured() {
     return Boolean(env().GOUPC_API_KEY);
   },
 
-  supports(context) {
-    return Boolean(context.upc && /^\d{8,14}$/.test(context.upc));
-  },
+  supports: hasBarcode,
 
-  async search(context) {
+  async search(context): Promise<SearchResult> {
     const config = env();
     const data = await withRetry(() =>
       fetchJson<GoUpcResponse>(
@@ -95,78 +131,137 @@ export const goUpcProvider: SearchProvider = {
       ),
     );
 
-    const image = data.product?.imageUrl;
-    if (!image) return [];
-    return [
-      {
-        provider: 'go-upc',
-        sourceUrl: image,
-        title: data.product?.name,
-        providerConfidence: 0.93,
-      },
-    ];
+    const product = data.product;
+    if (!product) return { candidates: [] };
+
+    return {
+      candidates: product.imageUrl
+        ? [
+            {
+              provider: 'go-upc',
+              sourceUrl: product.imageUrl,
+              title: product.name,
+              providerConfidence: 0.93,
+            },
+          ]
+        : [],
+      facts: cleanFacts({
+        title: product.name,
+        brand: product.brand,
+        category: product.category,
+        description: product.description,
+        source: 'go-upc',
+      }),
+    };
   },
 };
 
-/**
- * Open Food Facts covers grocery, beverage, and household barcodes. Free, no
- * key, and surprisingly good coverage for the FMCG lists that wholesalers send.
- */
-interface OpenFoodFactsResponse {
+// ---------------------------------------------------------------------------
+// The Open Facts family — free, no key, good coverage of consumer goods
+// ---------------------------------------------------------------------------
+
+interface OpenFactsResponse {
   status?: number;
   product?: {
     product_name?: string;
+    generic_name?: string;
     brands?: string;
+    categories?: string;
     image_url?: string;
     image_front_url?: string;
-    selected_images?: {
-      front?: { display?: Record<string, string> };
-    };
+    selected_images?: { front?: { display?: Record<string, string> } };
   };
 }
 
-export const openFoodFactsProvider: SearchProvider = {
-  name: 'openfoodfacts',
-  baseConfidence: 0.9,
+/**
+ * Open Food Facts and its sibling databases share one API shape. Together they
+ * cover groceries, drinks, cosmetics, pet food, and a growing slice of general
+ * merchandise — all keyless, which matters when someone is starting out with
+ * nothing but an OpenAI key.
+ */
+function openFactsProvider(name: string, host: string, confidence: number): SearchProvider {
+  return {
+    name,
+    tier: 'barcode',
+    baseConfidence: confidence,
+    keyless: true,
 
-  isConfigured() {
-    return true;
-  },
+    isConfigured() {
+      return true;
+    },
 
-  supports(context) {
-    return Boolean(context.upc && /^\d{8,14}$/.test(context.upc));
-  },
+    supports: hasBarcode,
 
-  async search(context) {
-    const data = await withRetry(() =>
-      fetchJson<OpenFoodFactsResponse>(
-        `https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(context.upc!)}.json`,
-        { headers: { 'user-agent': 'CatalogForge/1.0 (product catalog tooling)' } },
-      ),
-    );
+    async search(context): Promise<SearchResult> {
+      const data = await withRetry(() =>
+        fetchJson<OpenFactsResponse>(
+          `https://${host}/api/v2/product/${encodeURIComponent(context.upc!)}.json`,
+          { headers: { 'user-agent': 'CatalogForge/1.0 (product catalog tooling)' } },
+        ),
+      );
 
-    if (data.status !== 1 || !data.product) return [];
+      if (data.status !== 1 || !data.product) return { candidates: [] };
+      const product = data.product;
 
-    const display = data.product.selected_images?.front?.display ?? {};
-    const urls = [
-      ...Object.values(display),
-      data.product.image_front_url,
-      data.product.image_url,
-    ].filter((u): u is string => Boolean(u));
+      const display = product.selected_images?.front?.display ?? {};
+      const urls = [...Object.values(display), product.image_front_url, product.image_url].filter(
+        (url): url is string => Boolean(url),
+      );
 
-    const seen = new Set<string>();
-    const candidates: SearchCandidate[] = [];
-    for (const url of urls) {
-      if (seen.has(url)) continue;
-      seen.add(url);
-      candidates.push({
-        provider: 'openfoodfacts',
-        sourceUrl: url,
-        title: [data.product.brands, data.product.product_name].filter(Boolean).join(' '),
-        providerConfidence: 0.9,
-      });
-      if (candidates.length >= context.limit) break;
-    }
-    return candidates;
-  },
-};
+      const seen = new Set<string>();
+      const candidates: SearchCandidate[] = [];
+      for (const url of urls) {
+        if (seen.has(url)) continue;
+        seen.add(url);
+        candidates.push({
+          provider: name,
+          sourceUrl: url,
+          title: [product.brands, product.product_name].filter(Boolean).join(' '),
+          providerConfidence: confidence,
+        });
+        if (candidates.length >= context.limit) break;
+      }
+
+      return {
+        candidates,
+        facts: cleanFacts({
+          title: product.product_name ?? product.generic_name,
+          // These fields are comma-separated lists; the first entry is primary.
+          brand: product.brands?.split(',')[0],
+          category: product.categories?.split(',').pop(),
+          description: product.generic_name,
+          source: name,
+        }),
+      };
+    },
+  };
+}
+
+export const openFoodFactsProvider = openFactsProvider('openfoodfacts', 'world.openfoodfacts.org', 0.9);
+export const openBeautyFactsProvider = openFactsProvider('openbeautyfacts', 'world.openbeautyfacts.org', 0.88);
+export const openProductsFactsProvider = openFactsProvider('openproductsfacts', 'world.openproductsfacts.org', 0.86);
+export const openPetFoodFactsProvider = openFactsProvider('openpetfoodfacts', 'world.openpetfoodfacts.org', 0.86);
+
+// ---------------------------------------------------------------------------
+
+/** Drop blank values and trim, so downstream merging never sees empty strings. */
+function cleanFacts(facts: ProductFacts): ProductFacts | undefined {
+  const clean = (value?: string) => {
+    const trimmed = value?.replace(/\s+/g, ' ').trim();
+    return trimmed && trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const result: ProductFacts = {
+    title: clean(facts.title),
+    brand: clean(facts.brand),
+    model: clean(facts.model),
+    category: clean(facts.category),
+    description: clean(facts.description),
+    source: facts.source,
+  };
+
+  const hasAnything = Boolean(
+    result.title || result.brand || result.model || result.category || result.description,
+  );
+  return hasAnything ? result : undefined;
+}

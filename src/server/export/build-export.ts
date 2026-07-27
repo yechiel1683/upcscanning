@@ -5,6 +5,7 @@ import { stringify } from 'csv-stringify/sync';
 import { ExportStatus, ImageSourceKind, ProductStatus } from '@prisma/client';
 
 import { env } from '@/lib/env';
+import type { ProductFacts } from '@/lib/types';
 import { prisma } from '@/server/db';
 import { makeUniqueFileName } from '@/server/images/naming';
 import { keys, storage } from '@/server/storage';
@@ -113,6 +114,10 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
 
   for (const product of batch.products) {
     const image = product.images[0];
+    const facts = readFacts(product.facts);
+
+    // The resolved columns are the point of the whole exercise for anyone who
+    // uploaded bare barcodes: this is where the product details come back.
     const baseRow: Record<string, string> = {
       row: String(product.rowNumber),
       sku: product.sku ?? '',
@@ -121,7 +126,9 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
       brand: product.brand ?? '',
       model: product.model ?? '',
       category: product.category ?? '',
+      description: truncateCell(product.description),
       price: product.price ? product.price.toString() : '',
+      details_source: facts?.source ?? '',
     };
 
     if (product.status === ProductStatus.SUCCEEDED && image) {
@@ -175,7 +182,8 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
   }
 
   const csvColumns = [
-    'row', 'sku', 'upc', 'product_name', 'brand', 'model', 'category', 'price',
+    'row', 'sku', 'upc', 'product_name', 'brand', 'model', 'category',
+    'description', 'price', 'details_source',
     'image_file', 'image_url', 'image_type', 'image_source', 'source_url',
     'dimensions', 'match_confidence', 'quality_score', 'status',
   ];
@@ -188,7 +196,10 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
     archive.append(
       stringify(failures, {
         header: true,
-        columns: ['row', 'sku', 'upc', 'product_name', 'brand', 'model', 'category', 'price', 'reason'],
+        columns: [
+          'row', 'sku', 'upc', 'product_name', 'brand', 'model', 'category',
+          'description', 'price', 'details_source', 'reason',
+        ],
         bom: true,
       }),
       { name: LAYOUT.failuresName },
@@ -206,6 +217,19 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
   await finished;
 
   return { buffer: Buffer.concat(chunks), imageCount };
+}
+
+/** Excel refuses to open cells beyond 32,767 characters. */
+function truncateCell(value: string | null): string {
+  if (!value) return '';
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 2000 ? `${collapsed.slice(0, 1997)}...` : collapsed;
+}
+
+function readFacts(value: unknown): ProductFacts | null {
+  if (!value || typeof value !== 'object') return null;
+  const facts = value as Partial<ProductFacts>;
+  return typeof facts.source === 'string' ? (facts as ProductFacts) : null;
 }
 
 function describeKind(kind: ImageSourceKind): string {

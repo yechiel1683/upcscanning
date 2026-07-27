@@ -3,6 +3,7 @@ import { handleError, ok } from '@/server/api/respond';
 import { prisma } from '@/server/db';
 import { backgroundRemovalMode } from '@/server/providers/bgremove';
 import { generationStatus } from '@/server/providers/generate';
+import { understandingProvider } from '@/server/providers/llm/enrichment';
 import { providerStatus } from '@/server/providers/search';
 import { queue } from '@/server/queue';
 
@@ -28,10 +29,7 @@ export async function GET() {
       database,
       queue: { driver: queue().name, ...stats },
       storage: config.STORAGE_DRIVER,
-      productUnderstanding: {
-        provider: config.ANTHROPIC_API_KEY ? 'anthropic' : 'heuristic',
-        model: config.ANTHROPIC_API_KEY ? config.ANTHROPIC_MODEL : null,
-      },
+      productUnderstanding: understandingProvider(),
       imageSearch: {
         providers: search,
         configuredCount: search.filter((p) => p.configured).length,

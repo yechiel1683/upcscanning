@@ -7,6 +7,7 @@ import { Card, CardHeader, EmptyState, formatDate, LinkButton, ProgressBar } fro
 import { currentUser } from '@/server/auth/session';
 import { prisma } from '@/server/db';
 import { generationStatus } from '@/server/providers/generate';
+import { understandingProvider } from '@/server/providers/llm/enrichment';
 import { providerStatus } from '@/server/providers/search';
 
 export const metadata: Metadata = { title: 'Overview' };
@@ -62,6 +63,7 @@ export default async function DashboardPage() {
   const search = providerStatus();
   const configuredSearch = search.filter((p) => p.configured);
   const generation = generationStatus();
+  const understanding = understandingProvider();
 
   return (
     <div className="space-y-6">
@@ -174,6 +176,16 @@ export default async function DashboardPage() {
               }
               detail={configuredSearch.map((p) => p.name).join(', ') || 'Add API keys to enable search'}
               ok={configuredSearch.length > 0}
+            />
+            <ConfigRow
+              label="Product identification"
+              value={understanding.provider === 'heuristic' ? 'Built-in rules' : understanding.provider}
+              detail={
+                understanding.model
+                  ? `Using ${understanding.model} to identify products`
+                  : 'Add OPENAI_API_KEY or ANTHROPIC_API_KEY for better matching'
+              }
+              ok={understanding.provider !== 'heuristic'}
             />
             <ConfigRow
               label="AI generation"

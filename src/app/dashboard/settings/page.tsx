@@ -6,6 +6,7 @@ import { currentUser } from '@/server/auth/session';
 import { prisma } from '@/server/db';
 import { backgroundRemovalMode } from '@/server/providers/bgremove';
 import { generationStatus } from '@/server/providers/generate';
+import { understandingProvider } from '@/server/providers/llm/enrichment';
 import { providerStatus } from '@/server/providers/search';
 import { queue } from '@/server/queue';
 import { ApiKeys } from './api-keys';
@@ -36,6 +37,7 @@ export default async function SettingsPage() {
 
   const search = providerStatus();
   const generation = generationStatus();
+  const understanding = understandingProvider();
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -120,7 +122,7 @@ export default async function SettingsPage() {
                     <span className="ml-1.5 text-xs text-ink-500">({provider.kind})</span>
                   </span>
                   <Badge tone={provider.configured ? 'positive' : 'neutral'}>
-                    {provider.configured ? 'Active' : 'No key'}
+                    {provider.configured ? (provider.keyless ? 'Active (free)' : 'Active') : 'No key'}
                   </Badge>
                 </li>
               ))}
@@ -151,7 +153,11 @@ export default async function SettingsPage() {
               <Row label="Storage" value={config.STORAGE_DRIVER} compact />
               <Row
                 label="Product understanding"
-                value={config.ANTHROPIC_API_KEY ? config.ANTHROPIC_MODEL : 'heuristic (no API key)'}
+                value={
+                  understanding.model
+                    ? `${understanding.provider} · ${understanding.model}`
+                    : 'heuristic (no API key)'
+                }
                 compact
               />
               <Row label="Background removal" value={backgroundRemovalMode()} compact />

@@ -121,6 +121,44 @@ export interface SearchCandidate {
   providerConfidence: number;
 }
 
+/**
+ * What a lookup told us about the product itself, as opposed to where to find
+ * a picture of it.
+ *
+ * This is what makes a bare list of barcodes useful: the customer uploads a
+ * column of numbers and gets back names, brands, and models they never had.
+ */
+export interface ProductFacts {
+  title?: string;
+  brand?: string;
+  model?: string;
+  category?: string;
+  description?: string;
+  /** Which lookup produced these, for the export's provenance columns. */
+  source: string;
+}
+
+export interface SearchResult {
+  candidates: SearchCandidate[];
+  facts?: ProductFacts;
+}
+
+/** Merge facts from several lookups; earlier sources win field by field. */
+export function mergeFacts(entries: Array<ProductFacts | undefined>): ProductFacts | undefined {
+  const present = entries.filter((entry): entry is ProductFacts => Boolean(entry));
+  if (present.length === 0) return undefined;
+
+  const merged: ProductFacts = { source: present.map((entry) => entry.source).join('+') };
+  for (const entry of present) {
+    merged.title ??= entry.title;
+    merged.brand ??= entry.brand;
+    merged.model ??= entry.model;
+    merged.category ??= entry.category;
+    merged.description ??= entry.description;
+  }
+  return merged;
+}
+
 export interface DownloadedImage {
   buffer: Buffer;
   mimeType: string;

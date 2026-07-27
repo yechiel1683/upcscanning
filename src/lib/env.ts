@@ -51,11 +51,16 @@ const schema = z.object({
   BING_SEARCH_API_KEY: str,
   SERPAPI_KEY: str,
 
+  // "auto" turns generation on for whichever provider has a key, so a single
+  // OPENAI_API_KEY is enough to get the fallback path working.
   IMAGE_GENERATION_PROVIDER: z
-    .enum(['none', 'openai', 'replicate', 'stability'])
-    .default('none'),
+    .enum(['auto', 'none', 'openai', 'replicate', 'stability'])
+    .default('auto'),
   OPENAI_API_KEY: str,
   OPENAI_IMAGE_MODEL: z.string().default('gpt-image-1'),
+  OPENAI_TEXT_MODEL: z.string().default('gpt-4o-mini'),
+  OPENAI_SEARCH_MODEL: z.string().default('gpt-4o-mini'),
+  OPENAI_WEB_SEARCH: z.enum(['on', 'off']).default('on'),
   REPLICATE_API_TOKEN: str,
   REPLICATE_MODEL: z.string().default('black-forest-labs/flux-1.1-pro'),
   STABILITY_API_KEY: str,

@@ -14,6 +14,25 @@ supplier_list.xlsx  ──►  identify ──► find real photo ──► rend
 
 ---
 
+## Start with nothing but barcodes
+
+You do not need a filled-in spreadsheet. Paste a column of UPCs and the platform
+works out the rest:
+
+```
+036000291452          ──►   Duracell_Coppertop_AA_Batteries_8_Pack_036000291452.jpg
+885911574518                DeWalt_20V_MAX_Cordless_Drill_DCD771C2_885911574518.jpg
+5449000000996               Coca_Cola_Classic_330ml_Can_5449000000996.jpg
+```
+
+Each barcode is resolved to a real product first — name, brand, model, category
+— and only then do we look for its photograph. Those discovered details come
+back with the images, in the export CSV and in the filenames.
+
+**One API key covers the whole job.** With `OPENAI_API_KEY` set, the same key
+identifies products, searches the web for real photography, and generates an
+image when no real one exists. Nothing else is required.
+
 ## What it does
 
 **Workflow A — find the real product image.** Every row is identified (brand,
@@ -41,7 +60,9 @@ catalog_images.zip
 │   ├── Samsung_55_Inch_Smart_TV_12345.jpg
 │   ├── Apple_AirPods_Pro_2_67890.jpg
 │   └── DeWalt_20V_Max_Drill_54321.jpg
-├── products_with_images.csv     your rows + filename, URL, provenance, scores
+├── products_with_images.csv     your rows + the details we discovered
+│                                (name, brand, model, category, description)
+│                                + filename, URL, provenance, scores
 ├── processing_report.txt        what was processed, and how
 ├── failed_products.csv          what did not work, and why
 └── README.txt                   how to read the above
@@ -68,12 +89,21 @@ npm run seed                  # creates demo@catalogforge.local
 npm run dev                   # http://localhost:3000
 ```
 
-Sign in with the seeded account and upload `examples/sample-products.csv`.
+Sign in with the seeded account, then either upload
+`examples/sample-products.csv` or go to **New upload → Barcode list** and paste
+the codes from `examples/sample-barcodes.txt`.
 
-**It runs with zero third-party API keys.** No keys means no queue
-infrastructure (jobs run in-process), heuristic product identification instead
-of an LLM, and only the free barcode databases for image search. Add keys to
-turn each capability on — nothing else changes.
+### What you get for each level of setup
+
+| Setup | Identification | Finding real photos | Fallback |
+| --- | --- | --- | --- |
+| No keys at all | Built-in rules | Keyless barcode databases only | Off |
+| `OPENAI_API_KEY` | GPT | Barcode databases **+ web search** | Generation on |
+| `+ SERPAPI_KEY` or Google CSE | GPT | Adds a dedicated image-search API | Generation on |
+
+The middle row is the intended setup. The third is a cost/latency optimisation:
+a dedicated image-search API is cheaper and faster per lookup than asking a
+model to browse, and becomes worth adding at volume.
 
 ### With Redis and a dedicated worker
 
@@ -104,11 +134,12 @@ the full annotated list.
 | Sessions | `AUTH_SECRET` | Required |
 | Queue | `QUEUE_DRIVER`, `REDIS_URL` | `inline` — jobs run in the web process |
 | Storage | `STORAGE_DRIVER`, `S3_*` | `local` — files under `./storage` |
-| Product understanding | `ANTHROPIC_API_KEY` | Heuristic brand/model extraction |
-| Barcode lookup | *(none needed)* | UPCitemdb trial + Open Food Facts are keyless |
+| Product understanding | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | Heuristic brand/model extraction |
+| Barcode lookup | *(none needed)* | UPCitemdb trial + four Open Facts databases are keyless |
 | Barcode lookup (higher limits) | `UPCITEMDB_API_KEY`, `GOUPC_API_KEY` | Trial rate limits |
-| Web image search | `SERPAPI_KEY` / `GOOGLE_CSE_*` / `BING_SEARCH_API_KEY` | Barcode sources only |
-| AI generation | `IMAGE_GENERATION_PROVIDER` + provider key | Workflow B disabled |
+| Web image search | `OPENAI_API_KEY` | Barcode sources only |
+| Web image search (dedicated) | `SERPAPI_KEY` / `GOOGLE_CSE_*` / `BING_SEARCH_API_KEY` | Model browsing, which is slower per lookup |
+| AI generation | `OPENAI_API_KEY` (or Replicate / Stability) | Workflow B disabled |
 | Background removal | `BACKGROUND_REMOVAL_PROVIDER`, `REMOVEBG_API_KEY` | Built-in flood-fill cutout |
 
 The dashboard's Settings page shows exactly which providers are live, and the
@@ -125,10 +156,10 @@ src/
 │   ├── api/                     upload, batches, products, exports, images, auth
 │   └── dashboard/               overview, upload wizard, batch detail, settings
 ├── server/
-│   ├── ingest/                  CSV/XLSX parsing, column detection, normalisation
+│   ├── ingest/                  CSV/XLSX parsing, barcode lists, column detection
 │   ├── providers/
-│   │   ├── llm/                 product understanding (Anthropic + heuristics)
-│   │   ├── search/              barcode databases and web image search
+│   │   ├── llm/                 product understanding (OpenAI / Anthropic / heuristics)
+│   │   ├── search/              barcode databases, OpenAI web search, image APIs
 │   │   ├── generate/            OpenAI / Replicate / Stability
 │   │   └── bgremove/            remove.bg, or the local cutout
 │   ├── images/                  background segmentation, scoring, sharp pipeline, naming
@@ -142,24 +173,35 @@ src/
 
 ### How a product is processed
 
-1. **Identify.** The row becomes a canonical title, brand, model, search
+The order is barcode-first by design: `036000291452` is an unsearchable query,
+while `Duracell Coppertop AA Batteries 8 Pack` is a very good one.
+
+1. **Resolve the barcode.** Barcode databases are keyed on the exact GTIN, so
+   they answer a different question from an image search: not *where is a
+   picture* but *what is this thing*. Their answer fills in every product field
+   the upload left blank, and feeds every step below.
+2. **Identify.** The row becomes a canonical title, brand, model, search
    queries, a generation prompt, and — importantly — *negative keywords*: words
    that would mean a search result is an accessory rather than the product. A
    phone case is not a phone.
-2. **Search.** Providers are queried in trust order and the walk stops early. A
-   barcode hit ends the search, which is what keeps the unit cost of a
+3. **Search.** Barcode-database images are tried first, then the open web, and
+   the walk stops early once something is confidently good. Skipping the web
+   tier on rows the barcode already answered is what keeps the unit cost of a
    1,000-product batch viable.
-3. **Score before downloading.** Text signals (barcode present, model number
+4. **Score before downloading.** Text signals (barcode present, model number
    match, title overlap, accessory keywords, URL shape, reported dimensions)
    filter candidates before any bandwidth is spent.
-4. **Score after downloading.** Resolution, aspect ratio, backdrop uniformity,
+5. **Score after downloading.** Resolution, aspect ratio, backdrop uniformity,
    subject framing, and detail decide whether the photo is usable.
-5. **Render.** Orient, segment, trim to the subject, resize into a padded frame,
+6. **Render.** Orient, segment, trim to the subject, resize into a padded frame,
    composite onto the backdrop, add a contact shadow, encode.
-6. **Fall back.** No usable candidate and generation enabled → Workflow B.
-7. **Persist.** The image, its provenance, and the full candidate audit trail —
-   including every rejection and its reason — are stored, so a wrong match is
-   debuggable instead of mysterious.
+7. **Fall back.** No usable candidate and generation enabled → Workflow B.
+8. **Persist.** The image, the discovered product details, its provenance, and
+   the full candidate audit trail — including every rejection and its reason —
+   are stored, so a wrong match is debuggable instead of mysterious.
+
+A discovered detail never overwrites something the upload stated explicitly. It
+only fills a blank, or replaces a placeholder we invented ourselves.
 
 ### Background removal
 
@@ -187,7 +229,7 @@ Authenticate with a session cookie or `Authorization: Bearer <api-key>`
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/uploads/preview` | Parse a file and return the detected column mapping — no credits spent |
-| `POST` | `/api/batches` | Create a batch and start processing (multipart: `file`, `mapping`, `options`) |
+| `POST` | `/api/batches` | Create a batch from a spreadsheet (multipart: `file`, `mapping`, `options`) **or** a barcode list (JSON: `barcodes`, `options`) |
 | `GET` | `/api/batches` | List batches |
 | `GET` | `/api/batches/:id` | Live status and progress counters |
 | `DELETE` | `/api/batches/:id` | Cancel if running, delete if finished |
@@ -201,10 +243,17 @@ Authenticate with a session cookie or `Authorization: Bearer <api-key>`
 | `GET` | `/api/health` | Liveness probe |
 
 ```bash
+# A spreadsheet
 curl -X POST http://localhost:3000/api/batches \
   -H "Authorization: Bearer cf_live_…" \
   -F "file=@examples/sample-products.csv" \
   -F 'options={"width":1600,"height":1600,"background":"white","format":"jpeg"}'
+
+# Just barcodes
+curl -X POST http://localhost:3000/api/batches \
+  -H "Authorization: Bearer cf_live_…" \
+  -H "content-type: application/json" \
+  -d '{"barcodes":"036000291452\n885911574518\n5449000000996"}'
 ```
 
 ---

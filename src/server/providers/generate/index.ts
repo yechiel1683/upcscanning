@@ -225,10 +225,22 @@ const PROVIDERS: Record<string, GenerationProvider> = {
   stability: stabilityProvider,
 };
 
+/** Preference order when IMAGE_GENERATION_PROVIDER is "auto". */
+const AUTO_ORDER = ['openai', 'replicate', 'stability'] as const;
+
 /** The configured generation provider, or null when Workflow B is disabled. */
 export function generationProvider(): GenerationProvider | null {
   const name = env().IMAGE_GENERATION_PROVIDER;
   if (name === 'none') return null;
+
+  if (name === 'auto') {
+    for (const candidate of AUTO_ORDER) {
+      const provider = PROVIDERS[candidate];
+      if (provider?.isConfigured()) return provider;
+    }
+    return null;
+  }
+
   const provider = PROVIDERS[name];
   if (!provider || !provider.isConfigured()) return null;
   return provider;
@@ -236,9 +248,21 @@ export function generationProvider(): GenerationProvider | null {
 
 export function generationStatus(): { enabled: boolean; provider: string | null; reason?: string } {
   const name = env().IMAGE_GENERATION_PROVIDER;
+
   if (name === 'none') {
     return { enabled: false, provider: null, reason: 'IMAGE_GENERATION_PROVIDER is "none"' };
   }
+
+  if (name === 'auto') {
+    const provider = generationProvider();
+    if (provider) return { enabled: true, provider: provider.name };
+    return {
+      enabled: false,
+      provider: null,
+      reason: 'No image generation key found. Set OPENAI_API_KEY to enable it.',
+    };
+  }
+
   const provider = PROVIDERS[name];
   if (!provider) return { enabled: false, provider: name, reason: `Unknown provider "${name}"` };
   if (!provider.isConfigured()) {

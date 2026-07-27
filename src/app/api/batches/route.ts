@@ -1,10 +1,13 @@
 import { BatchStatus, ProductStatus } from '@prisma/client';
 
+import { z } from 'zod';
+
 import { env } from '@/lib/env';
-import { DEFAULT_RENDER_OPTIONS } from '@/lib/types';
+import { DEFAULT_RENDER_OPTIONS, renderOptionsSchema, type RenderOptions } from '@/lib/types';
 import { fail, handleError, ok, withUser } from '@/server/api/respond';
 import { readUploadForm, UploadError } from '@/server/api/upload';
 import { prisma } from '@/server/db';
+import { parseBarcodeList } from '@/server/ingest/barcode-list';
 import { mappingIsUsable } from '@/server/ingest/column-mapper';
 import { IngestError, parseSpreadsheet } from '@/server/ingest/parser';
 import { queue } from '@/server/queue';
@@ -45,22 +48,53 @@ export const GET = withUser(async (user, request) => {
   });
 });
 
+const barcodeBodySchema = z.object({
+  barcodes: z.string().min(1, 'Paste at least one barcode.').max(500_000),
+  name: z.string().trim().min(1).max(200).optional(),
+  options: renderOptionsSchema.partial().optional(),
+});
+
 /**
- * Create a batch from an uploaded spreadsheet and start processing.
+ * Create a batch and start processing.
  *
- * Products are inserted in one shot and then handed to the queue; the response
- * returns as soon as the work is scheduled rather than waiting for images, so
- * a 1,000-row upload still answers in a couple of seconds.
+ * Accepts either a spreadsheet (multipart) or a pasted list of barcodes
+ * (JSON). Products are inserted in one shot and then handed to the queue; the
+ * response returns as soon as the work is scheduled rather than waiting for
+ * images, so a 1,000-row upload still answers in a couple of seconds.
  */
 export const POST = withUser(async (user, request) => {
   try {
-    const form = await readUploadForm(request);
     const config = env();
 
-    const parsed = await parseSpreadsheet(form.buffer, form.fileName, {
-      mappingOverride: form.mapping,
-      maxProducts: config.MAX_PRODUCTS_PER_BATCH,
-    });
+    // Two ways in: a spreadsheet, or a pasted column of barcodes. The pipeline
+    // resolves a barcode to a real product on its own, so the second is a
+    // complete input, not a degraded one.
+    const isJson = (request.headers.get('content-type') ?? '').includes('application/json');
+
+    let parsed;
+    let sourceName: string;
+    let sourceBuffer: Buffer | null = null;
+    let optionOverrides: Partial<RenderOptions> | undefined;
+    let batchName: string | undefined;
+
+    if (isJson) {
+      const body = barcodeBodySchema.parse(await request.json());
+      parsed = parseBarcodeList(body.barcodes, config.MAX_PRODUCTS_PER_BATCH);
+      sourceName = 'pasted-barcodes.txt';
+      sourceBuffer = Buffer.from(body.barcodes, 'utf8');
+      optionOverrides = body.options;
+      batchName = body.name ?? `Barcode list — ${parsed.products.length} items`;
+    } else {
+      const form = await readUploadForm(request);
+      parsed = await parseSpreadsheet(form.buffer, form.fileName, {
+        mappingOverride: form.mapping,
+        maxProducts: config.MAX_PRODUCTS_PER_BATCH,
+      });
+      sourceName = form.fileName;
+      sourceBuffer = form.buffer;
+      optionOverrides = form.options;
+      batchName = form.name || form.fileName.replace(/\.[^.]+$/, '');
+    }
 
     if (!mappingIsUsable(parsed.mapping)) {
       return fail(
@@ -72,7 +106,9 @@ export const POST = withUser(async (user, request) => {
 
     if (parsed.products.length === 0) {
       return fail(
-        'No usable product rows were found in that file. Every row was empty or a duplicate.',
+        isJson
+          ? 'No usable barcodes were found. Paste one barcode per line.'
+          : 'No usable product rows were found in that file. Every row was empty or a duplicate.',
         422,
         { skipped: parsed.skipped.slice(0, 20) },
       );
@@ -87,14 +123,14 @@ export const POST = withUser(async (user, request) => {
       );
     }
 
-    const renderOptions = { ...DEFAULT_RENDER_OPTIONS, ...(form.options ?? {}) };
+    const renderOptions = { ...DEFAULT_RENDER_OPTIONS, ...(optionOverrides ?? {}) };
 
     const batch = await prisma.batch.create({
       data: {
         userId: user.id,
-        name: form.name || form.fileName.replace(/\.[^.]+$/, ''),
-        originalFile: form.fileName,
-        fileSizeBytes: form.buffer.byteLength,
+        name: batchName,
+        originalFile: sourceName,
+        fileSizeBytes: sourceBuffer?.byteLength ?? 0,
         status: BatchStatus.QUEUED,
         columnMapping: parsed.mapping,
         renderOptions,
@@ -103,11 +139,13 @@ export const POST = withUser(async (user, request) => {
       },
     });
 
-    // Keep the source file: it is the only way to explain a mapping decision
-    // after the fact, and it makes a re-run possible without a re-upload.
-    await storage()
-      .put(keys.upload(batch.id, form.fileName), form.buffer, 'application/octet-stream')
-      .catch((error) => console.warn('[upload] could not archive source file', error));
+    // Keep the source: it is the only way to explain a mapping decision after
+    // the fact, and it makes a re-run possible without a re-upload.
+    if (sourceBuffer) {
+      await storage()
+        .put(keys.upload(batch.id, sourceName), sourceBuffer, 'application/octet-stream')
+        .catch((error) => console.warn('[upload] could not archive source file', error));
+    }
 
     await prisma.product.createMany({
       data: parsed.products.map((product) => ({

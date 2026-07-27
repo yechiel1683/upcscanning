@@ -1,5 +1,5 @@
 import { env } from '@/lib/env';
-import type { SearchCandidate } from '@/lib/types';
+import type { SearchCandidate, SearchResult } from '@/lib/types';
 import { fetchJson, withRetry } from '@/server/lib/http';
 import type { SearchContext, SearchProvider } from './types';
 
@@ -19,7 +19,9 @@ interface GoogleCseResponse {
 
 export const googleCseProvider: SearchProvider = {
   name: 'google-cse',
+  tier: 'web',
   baseConfidence: 0.62,
+  keyless: false,
 
   isConfigured() {
     const config = env();
@@ -30,7 +32,7 @@ export const googleCseProvider: SearchProvider = {
     return true;
   },
 
-  async search(context) {
+  async search(context): Promise<SearchResult> {
     const config = env();
     const candidates: SearchCandidate[] = [];
 
@@ -69,7 +71,7 @@ export const googleCseProvider: SearchProvider = {
       }
     }
 
-    return candidates.slice(0, context.limit);
+    return { candidates: candidates.slice(0, context.limit) };
   },
 };
 
@@ -85,7 +87,9 @@ interface BingResponse {
 
 export const bingImageProvider: SearchProvider = {
   name: 'bing-images',
+  tier: 'web',
   baseConfidence: 0.6,
+  keyless: false,
 
   isConfigured() {
     return Boolean(env().BING_SEARCH_API_KEY);
@@ -95,7 +99,7 @@ export const bingImageProvider: SearchProvider = {
     return true;
   },
 
-  async search(context) {
+  async search(context): Promise<SearchResult> {
     const config = env();
     const candidates: SearchCandidate[] = [];
 
@@ -130,7 +134,7 @@ export const bingImageProvider: SearchProvider = {
       }
     }
 
-    return candidates.slice(0, context.limit);
+    return { candidates: candidates.slice(0, context.limit) };
   },
 };
 
@@ -148,7 +152,9 @@ interface SerpApiResponse {
 
 export const serpApiProvider: SearchProvider = {
   name: 'serpapi',
+  tier: 'web',
   baseConfidence: 0.65,
+  keyless: false,
 
   isConfigured() {
     return Boolean(env().SERPAPI_KEY);
@@ -158,7 +164,7 @@ export const serpApiProvider: SearchProvider = {
     return true;
   },
 
-  async search(context) {
+  async search(context): Promise<SearchResult> {
     const config = env();
     const candidates: SearchCandidate[] = [];
 
@@ -193,7 +199,7 @@ export const serpApiProvider: SearchProvider = {
       }
     }
 
-    return candidates.slice(0, context.limit);
+    return { candidates: candidates.slice(0, context.limit) };
   },
 };
 
@@ -217,18 +223,22 @@ export function isTrustedRetailer(source: string): boolean {
 export function directUrlProvider(imageUrl: string): SearchProvider {
   return {
     name: 'spreadsheet',
+    tier: 'web',
     baseConfidence: 0.99,
+    keyless: true,
     isConfigured: () => true,
     supports: () => true,
-    async search(_context: SearchContext): Promise<SearchCandidate[]> {
-      return [
-        {
-          provider: 'spreadsheet',
-          sourceUrl: imageUrl,
-          title: _context.name,
-          providerConfidence: 0.99,
-        },
-      ];
+    async search(context: SearchContext): Promise<SearchResult> {
+      return {
+        candidates: [
+          {
+            provider: 'spreadsheet',
+            sourceUrl: imageUrl,
+            title: context.name,
+            providerConfidence: 0.99,
+          },
+        ],
+      };
     },
   };
 }

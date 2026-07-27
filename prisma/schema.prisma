@@ -1,0 +1,289 @@
+// CatalogForge data model.
+//
+// The shape here follows the lifecycle of a job: a user uploads a spreadsheet
+// (Batch), which fans out into Products, each of which produces zero or more
+// ImageAssets through one or more ProcessingAttempts. Credit consumption is
+// recorded in an append-only ledger so usage is auditable.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Accounts and billing
+// ---------------------------------------------------------------------------
+
+enum Plan {
+  FREE
+  STARTER
+  GROWTH
+  SCALE
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String?
+  plan         Plan     @default(FREE)
+  // Running balance, kept in sync with CreditLedger entries. Denormalised so
+  // the hot path (enqueueing 1,000 products) is a single read.
+  credits      Int      @default(50)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  batches   Batch[]
+  apiKeys   ApiKey[]
+  ledger    CreditLedger[]
+  sessions  Session[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  // Only a hash is stored; the plaintext key is shown once at creation.
+  keyHash    String    @unique
+  prefix     String
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+enum LedgerReason {
+  SIGNUP_GRANT
+  PLAN_RENEWAL
+  MANUAL_ADJUSTMENT
+  IMAGE_SOURCED
+  IMAGE_GENERATED
+  REFUND_FAILED
+}
+
+model CreditLedger {
+  id        String       @id @default(cuid())
+  userId    String
+  // Negative for consumption, positive for grants.
+  delta     Int
+  reason    LedgerReason
+  batchId   String?
+  productId String?
+  note      String?
+  createdAt DateTime     @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("credit_ledger")
+}
+
+// ---------------------------------------------------------------------------
+// Uploads
+// ---------------------------------------------------------------------------
+
+enum BatchStatus {
+  UPLOADED
+  MAPPING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+  CANCELLED
+}
+
+model Batch {
+  id             String      @id @default(cuid())
+  userId         String
+  name           String
+  originalFile   String
+  fileSizeBytes  Int
+  status         BatchStatus @default(UPLOADED)
+  // Snapshot of how spreadsheet headers were mapped onto canonical fields, so
+  // a batch can be explained (and replayed) long after the upload.
+  columnMapping  Json
+  // Per-batch overrides of the rendering options (size, background, format).
+  renderOptions  Json
+  totalProducts  Int         @default(0)
+  processedCount Int         @default(0)
+  successCount   Int         @default(0)
+  failedCount    Int         @default(0)
+  skippedCount   Int         @default(0)
+  errorMessage   String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products Product[]
+  exports  Export[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("batches")
+}
+
+// ---------------------------------------------------------------------------
+// Products
+// ---------------------------------------------------------------------------
+
+enum ProductStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum ImageSourceKind {
+  // Workflow A: a real photograph of the real product.
+  REAL
+  // Workflow B: synthesised from the product description.
+  AI_GENERATED
+  // Supplied directly in the spreadsheet.
+  USER_PROVIDED
+}
+
+model Product {
+  id          String  @id @default(cuid())
+  batchId     String
+  // 1-based position in the source spreadsheet, used for stable ordering and
+  // for pointing the user at the offending row when something fails.
+  rowNumber   Int
+  sku         String?
+  upc         String?
+  name        String
+  brand       String?
+  model       String?
+  description String?
+  category    String?
+  price       Decimal? @db.Decimal(12, 2)
+  // Everything from the spreadsheet that did not map to a canonical field.
+  extra       Json?
+
+  status       ProductStatus @default(PENDING)
+  attempts     Int           @default(0)
+  errorMessage String?
+  // Populated by the LLM enrichment step: canonical product title, search
+  // queries, and a generation prompt.
+  enrichment   Json?
+  outputName   String?
+  processedAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  batch      Batch              @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  images     ImageAsset[]
+  candidates ImageCandidate[]
+
+  @@index([batchId, status])
+  @@index([batchId, rowNumber])
+  @@map("products")
+}
+
+// A raw search hit, before download/validation. Retained so a human can audit
+// why a particular image was chosen and pick a different one.
+model ImageCandidate {
+  id         String   @id @default(cuid())
+  productId  String
+  provider   String
+  sourceUrl  String   @db.Text
+  pageUrl    String?  @db.Text
+  title      String?  @db.Text
+  width      Int?
+  height     Int?
+  // 0..1 confidence that this image depicts the requested product.
+  matchScore Float    @default(0)
+  // 0..1 technical quality (resolution, aspect, background cleanliness).
+  qualityScore Float  @default(0)
+  rejected   Boolean  @default(false)
+  rejectedReason String?
+  selected   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, matchScore])
+  @@map("image_candidates")
+}
+
+model ImageAsset {
+  id           String          @id @default(cuid())
+  productId    String
+  kind         ImageSourceKind
+  // Storage key, resolved by the active storage driver (local disk or S3).
+  storageKey   String
+  fileName     String
+  mimeType     String
+  width        Int
+  height       Int
+  bytes        Int
+  background   String
+  isPrimary    Boolean         @default(true)
+  // Provenance: which provider produced the source pixels, and from where.
+  provider     String?
+  sourceUrl    String?         @db.Text
+  qualityScore Float           @default(0)
+  matchScore   Float           @default(0)
+  createdAt    DateTime        @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("image_assets")
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
+enum ExportStatus {
+  PENDING
+  BUILDING
+  READY
+  FAILED
+}
+
+model Export {
+  id           String       @id @default(cuid())
+  batchId      String
+  status       ExportStatus @default(PENDING)
+  storageKey   String?
+  fileName     String
+  bytes        Int?
+  imageCount   Int          @default(0)
+  errorMessage String?
+  expiresAt    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  batch Batch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@map("exports")
+}

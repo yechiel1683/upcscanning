@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: catalogforge
+      POSTGRES_PASSWORD: catalogforge
+      POSTGRES_DB: catalogforge
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U catalogforge']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      target: runner
+    command: ['npm', 'run', 'start']
+    environment:
+      DATABASE_URL: postgresql://catalogforge:catalogforge@postgres:5432/catalogforge?schema=public
+      REDIS_URL: redis://redis:6379
+      QUEUE_DRIVER: redis
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /data/storage
+      AUTH_SECRET: ${AUTH_SECRET:-change-me-in-production-at-least-32-characters}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      NODE_ENV: production
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - '3000:3000'
+    volumes:
+      - storage-data:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Scale this service to add throughput: docker compose up --scale worker=4
+  worker:
+    build:
+      context: .
+      target: runner
+    command: ['npm', 'run', 'worker']
+    environment:
+      DATABASE_URL: postgresql://catalogforge:catalogforge@postgres:5432/catalogforge?schema=public
+      REDIS_URL: redis://redis:6379
+      QUEUE_DRIVER: redis
+      STORAGE_DRIVER: local
+      STORAGE_LOCAL_DIR: /data/storage
+      AUTH_SECRET: ${AUTH_SECRET:-change-me-in-production-at-least-32-characters}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-8}
+      NODE_ENV: production
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - storage-data:/data/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  storage-data:

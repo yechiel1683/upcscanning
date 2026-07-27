@@ -1,0 +1,87 @@
+@import 'tailwindcss';
+
+/*
+ * A single ink/surface/accent scale drives the whole product so the dashboard
+ * reads as one thing rather than a pile of components. Values are OKLCH so
+ * lightness steps stay perceptually even.
+ */
+@theme {
+  --color-ink-950: oklch(0.16 0.02 265);
+  --color-ink-900: oklch(0.22 0.02 265);
+  --color-ink-800: oklch(0.30 0.02 265);
+  --color-ink-600: oklch(0.48 0.015 265);
+  --color-ink-500: oklch(0.58 0.013 265);
+  --color-ink-400: oklch(0.70 0.011 265);
+  --color-ink-200: oklch(0.90 0.006 265);
+  --color-ink-100: oklch(0.955 0.004 265);
+  --color-ink-50: oklch(0.982 0.003 265);
+
+  --color-accent-700: oklch(0.48 0.17 265);
+  --color-accent-600: oklch(0.56 0.19 265);
+  --color-accent-500: oklch(0.64 0.18 265);
+  --color-accent-100: oklch(0.94 0.04 265);
+  --color-accent-50: oklch(0.975 0.02 265);
+
+  --color-positive-600: oklch(0.58 0.14 155);
+  --color-positive-100: oklch(0.94 0.05 155);
+  --color-warning-600: oklch(0.68 0.15 75);
+  --color-warning-100: oklch(0.95 0.06 75);
+  --color-danger-600: oklch(0.58 0.20 25);
+  --color-danger-100: oklch(0.95 0.05 25);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-ink-50);
+  color: var(--color-ink-900);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Checkerboard behind transparent PNG previews so alpha is legible. */
+.alpha-grid {
+  background-image:
+    linear-gradient(45deg, #e9eaee 25%, transparent 25%),
+    linear-gradient(-45deg, #e9eaee 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e9eaee 75%),
+    linear-gradient(-45deg, transparent 75%, #e9eaee 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.6), transparent);
+  animation: shimmer 1.6s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer::after {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

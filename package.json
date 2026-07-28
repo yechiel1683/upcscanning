@@ -1,8 +1,8 @@
 {
-  "name": "catalogforge",
+  "name": "upcscanning",
   "version": "0.1.0",
   "private": true,
-  "description": "Turn a product spreadsheet into a professional product image catalog, automatically.",
+  "description": "Turn a product spreadsheet or a list of barcodes into a professional product image catalog, automatically.",
   "engines": {
     "node": ">=20.11"
   },
@@ -10,7 +10,7 @@
     "dev": "next dev",
     "dev:worker": "tsx watch src/worker/index.ts",
     "build": "prisma generate && next build",
-    "start": "npm run release && next start",
+    "start": "npm run release && next start -H 0.0.0.0",
     "worker": "tsx src/worker/index.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
@@ -22,7 +22,7 @@
     "prisma:studio": "prisma studio",
     "seed": "tsx prisma/seed.ts",
     "release": "tsx scripts/release.ts",
-    "start:server": "next start"
+    "start:server": "next start -H 0.0.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",

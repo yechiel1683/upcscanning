@@ -75,6 +75,9 @@ export const openAiWebProvider: SearchProvider = {
   // the product, but well below a barcode lookup: it is still a judgement.
   baseConfidence: 0.72,
   keyless: false,
+  // Browsing calls are slow and metered; a modest ceiling keeps a large batch
+  // from tripping account rate limits mid-run.
+  rateLimit: { minIntervalMs: 250, maxConcurrent: 4 },
 
   isConfigured() {
     return Boolean(env().OPENAI_API_KEY) && env().OPENAI_WEB_SEARCH !== 'off';

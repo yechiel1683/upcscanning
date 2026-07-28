@@ -37,6 +37,10 @@ export const upcItemDbProvider: SearchProvider = {
   tier: 'barcode',
   baseConfidence: 0.95,
   keyless: true,
+  // The keyless trial allows roughly 100 lookups a day. Spacing calls out and
+  // serialising them keeps a burst from consuming the whole allowance at once;
+  // the lookup cache is what actually makes this tier viable in bulk.
+  rateLimit: { minIntervalMs: 1500, maxConcurrent: 1 },
 
   isConfigured() {
     // The trial tier works without a key (rate limited to ~100 lookups/day),
@@ -115,6 +119,7 @@ export const goUpcProvider: SearchProvider = {
   tier: 'barcode',
   baseConfidence: 0.93,
   keyless: false,
+  rateLimit: { minIntervalMs: 200, maxConcurrent: 4 },
 
   isConfigured() {
     return Boolean(env().GOUPC_API_KEY);
@@ -185,6 +190,8 @@ function openFactsProvider(name: string, host: string, confidence: number): Sear
     tier: 'barcode',
     baseConfidence: confidence,
     keyless: true,
+    // Open Facts is a donation-funded public service; be a good citizen.
+    rateLimit: { minIntervalMs: 300, maxConcurrent: 2 },
 
     isConfigured() {
       return true;

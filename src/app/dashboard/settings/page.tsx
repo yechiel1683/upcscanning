@@ -7,7 +7,7 @@ import { prisma } from '@/server/db';
 import { backgroundRemovalMode } from '@/server/providers/bgremove';
 import { generationStatus } from '@/server/providers/generate';
 import { understandingProvider } from '@/server/providers/llm/enrichment';
-import { providerStatus } from '@/server/providers/search';
+import { lookupCacheStats, providerStatus } from '@/server/providers/search';
 import { queue } from '@/server/queue';
 import { ApiKeys } from './api-keys';
 
@@ -38,6 +38,7 @@ export default async function SettingsPage() {
   const search = providerStatus();
   const generation = generationStatus();
   const understanding = understandingProvider();
+  const cache = await lookupCacheStats();
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -161,6 +162,15 @@ export default async function SettingsPage() {
                 compact
               />
               <Row label="Background removal" value={backgroundRemovalMode()} compact />
+              <Row
+                label="Barcode cache"
+                value={
+                  cache.enabled
+                    ? `${cache.entries.toLocaleString()} cached · ${cache.saved.toLocaleString()} lookups saved`
+                    : 'disabled'
+                }
+                compact
+              />
               <Row
                 label="Max products per batch"
                 value={config.MAX_PRODUCTS_PER_BATCH.toLocaleString()}

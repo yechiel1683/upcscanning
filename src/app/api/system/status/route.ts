@@ -4,7 +4,7 @@ import { prisma } from '@/server/db';
 import { backgroundRemovalMode } from '@/server/providers/bgremove';
 import { generationStatus } from '@/server/providers/generate';
 import { understandingProvider } from '@/server/providers/llm/enrichment';
-import { providerStatus } from '@/server/providers/search';
+import { lookupCacheStats, providerStatus } from '@/server/providers/search';
 import { queue } from '@/server/queue';
 
 /**
@@ -36,6 +36,7 @@ export async function GET() {
       },
       imageGeneration: generation,
       backgroundRemoval: backgroundRemovalMode(),
+      lookupCache: await lookupCacheStats(),
       limits: {
         maxUploadBytes: config.MAX_UPLOAD_BYTES,
         maxProductsPerBatch: config.MAX_PRODUCTS_PER_BATCH,

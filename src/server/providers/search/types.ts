@@ -1,4 +1,5 @@
 import type { ProductEnrichment, SearchResult } from '@/lib/types';
+import type { RateLimitConfig } from '@/server/lib/rate-limit';
 
 export interface SearchContext {
   upc?: string | null;
@@ -30,6 +31,11 @@ export interface SearchProvider {
   readonly baseConfidence: number;
   /** True when this provider needs no account of any kind. */
   readonly keyless: boolean;
+  /**
+   * How hard this provider may be pushed. Enforced centrally by the tier
+   * runners, so an individual provider never has to think about it.
+   */
+  readonly rateLimit?: RateLimitConfig;
   /** True when the provider has the credentials it needs. */
   isConfigured(): boolean;
   /** Providers keyed on a barcode are skipped for rows that have none. */

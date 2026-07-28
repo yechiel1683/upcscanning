@@ -72,6 +72,12 @@ const schema = z.object({
   BACKGROUND_REMOVAL_PROVIDER: z.enum(['auto', 'removebg', 'none']).default('auto'),
   REMOVEBG_API_KEY: str,
 
+  // Barcode lookups are cached and shared across batches and users, because a
+  // GTIN resolves to the same product forever.
+  LOOKUP_CACHE_ENABLED: bool(true),
+  LOOKUP_CACHE_TTL_DAYS: int(90),
+  LOOKUP_CACHE_MISS_TTL_DAYS: int(7),
+
   MAX_UPLOAD_BYTES: int(50 * 1024 * 1024),
   MAX_PRODUCTS_PER_BATCH: int(5000),
   MAX_IMAGE_DOWNLOAD_BYTES: int(15 * 1024 * 1024),

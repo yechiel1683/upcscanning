@@ -141,6 +141,7 @@ the full annotated list.
 | Web image search (dedicated) | `SERPAPI_KEY` / `GOOGLE_CSE_*` / `BING_SEARCH_API_KEY` | Model browsing, which is slower per lookup |
 | AI generation | `OPENAI_API_KEY` (or Replicate / Stability) | Workflow B disabled |
 | Background removal | `BACKGROUND_REMOVAL_PROVIDER`, `REMOVEBG_API_KEY` | Built-in flood-fill cutout |
+| Barcode cache | `LOOKUP_CACHE_ENABLED`, `LOOKUP_CACHE_TTL_DAYS` | On by default; disabling re-pays every repeat lookup |
 
 The dashboard's Settings page shows exactly which providers are live, and the
 overview explains *why* a capability is off rather than letting products fail
@@ -156,6 +157,7 @@ src/
 │   ├── api/                     upload, batches, products, exports, images, auth
 │   └── dashboard/               overview, upload wizard, batch detail, settings
 ├── server/
+│   ├── lib/                     HTTP + SSRF guards, provider rate limiting
 │   ├── ingest/                  CSV/XLSX parsing, barcode lists, column detection
 │   ├── providers/
 │   │   ├── llm/                 product understanding (OpenAI / Anthropic / heuristics)
@@ -212,12 +214,34 @@ the frame, it reports low confidence and the pipeline **keeps the original
 background** rather than punching a hole through the product. `remove.bg` is
 available for the hard cases (soft edges, hair, glass, lifestyle shots).
 
-### Scaling
+### Scaling, quotas, and cost
 
 Products are queued individually, so a 5,000-row upload is 5,000 independent
 jobs. Throughput scales with `WORKER_CONCURRENCY` and with the number of worker
 processes. The upload endpoint returns as soon as work is scheduled — it never
 waits for images.
+
+Two mechanisms keep that concurrency from working against you:
+
+**A shared barcode cache.** A GTIN identifies the same product forever, and
+supplier lists overlap heavily — the same barcode arrives again next month in
+someone else's spreadsheet. Lookups are cached across every batch and user, so
+the second time a barcode appears it costs nothing. This is what makes the
+keyless tier (UPCitemdb's ~100/day trial) viable for bulk work, and it stops a
+re-uploaded list re-spending your search budget. Misses are cached too, but
+expire sooner, since a database may add the product later. Provider *outages*
+are never cached — a transient 503 must not blind a barcode for three months.
+Settings shows how many lookups the cache has saved.
+
+**Per-provider rate limits.** Each provider declares a minimum spacing and a
+concurrency ceiling, enforced centrally. The keyless trial tier is serialised;
+OpenAI browsing is capped. Without this, eight workers would empty a
+hundred-a-day allowance in seconds and then take 429s for the rest of the run.
+
+One honest limitation: the rate limiter is per process, so running four worker
+containers means four limiters and four times the configured rate. The cache is
+what actually protects the tightest quota; a cross-process limiter would need
+Redis, which is optional in this deployment.
 
 ---
 

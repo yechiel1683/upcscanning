@@ -263,6 +263,38 @@ model ImageAsset {
 }
 
 // ---------------------------------------------------------------------------
+// Lookup cache
+// ---------------------------------------------------------------------------
+
+/**
+ * Barcode lookup results, shared across every batch and every user.
+ *
+ * A GTIN identifies the same product forever, and supplier lists overlap
+ * heavily — the same barcode arrives again next month in someone else's
+ * spreadsheet. Without this, every upload re-spends the free tier's daily
+ * allowance and the account's search budget on questions already answered.
+ */
+model BarcodeLookup {
+  upc String @id
+
+  // Merged product facts, and the raw candidate images each provider returned.
+  facts      Json?
+  candidates Json
+  // Which providers contributed, for debugging a bad cached answer.
+  providers  String[]
+  // True when no configured database recognised the barcode. Cached with a
+  // shorter life, since a database may add it later.
+  miss       Boolean  @default(false)
+
+  hits      Int      @default(0)
+  fetchedAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@map("barcode_lookups")
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 

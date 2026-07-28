@@ -22,6 +22,7 @@ export const googleCseProvider: SearchProvider = {
   tier: 'web',
   baseConfidence: 0.62,
   keyless: false,
+  rateLimit: { minIntervalMs: 120, maxConcurrent: 6 },
 
   isConfigured() {
     const config = env();
@@ -90,6 +91,7 @@ export const bingImageProvider: SearchProvider = {
   tier: 'web',
   baseConfidence: 0.6,
   keyless: false,
+  rateLimit: { minIntervalMs: 120, maxConcurrent: 6 },
 
   isConfigured() {
     return Boolean(env().BING_SEARCH_API_KEY);
@@ -155,6 +157,7 @@ export const serpApiProvider: SearchProvider = {
   tier: 'web',
   baseConfidence: 0.65,
   keyless: false,
+  rateLimit: { minIntervalMs: 120, maxConcurrent: 6 },
 
   isConfigured() {
     return Boolean(env().SERPAPI_KEY);

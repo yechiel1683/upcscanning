@@ -22,7 +22,7 @@ import {
   heuristicEnrichment,
   type EnrichmentInput,
 } from '@/server/providers/llm/enrichment';
-import { lookupBarcode, searchWeb, type SearchContext } from '@/server/providers/search';
+import { lookupBarcodeCached, searchWeb, type SearchContext } from '@/server/providers/search';
 
 /**
  * The per-product engine.
@@ -123,7 +123,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     // paying for a model call before we know what the product is would be
     // spending twice for the same answer.
     const provisional = heuristicEnrichment(toEnrichment(product));
-    const lookup = await lookupBarcode({
+    const lookup = await lookupBarcodeCached({
       upc: product.upc,
       sku: product.sku,
       name: product.name,
@@ -144,7 +144,8 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       log.push(
         `Barcode ${product.upc} resolved to "${facts.title ?? 'unnamed product'}"` +
           (facts.brand ? ` by ${facts.brand}` : '') +
-          ` via ${facts.source}`,
+          ` via ${facts.source}` +
+          (lookup.cached ? ' (cached)' : ''),
       );
     } else {
       log.push(`Barcode ${product.upc} is not in any configured product database`);

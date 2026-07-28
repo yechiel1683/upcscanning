@@ -36,8 +36,8 @@ export default async function BatchesPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink-950">Batches</h1>
-          <p className="mt-1 text-sm text-ink-500">Every product list you have uploaded.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">Batches</h1>
+          <p className="mt-1 text-sm text-muted">Every product list you have uploaded.</p>
         </div>
         <LinkButton href="/dashboard/upload">New upload</LinkButton>
       </div>
@@ -52,7 +52,7 @@ export default async function BatchesPage() {
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[720px] text-left text-sm">
-              <thead className="border-b border-ink-200 bg-ink-50 text-xs uppercase tracking-wide text-ink-500">
+              <thead className="border-b border-line bg-canvas text-xs uppercase tracking-wide text-muted">
                 <tr>
                   <th className="px-5 py-3 font-medium">Batch</th>
                   <th className="px-5 py-3 font-medium">Status</th>
@@ -61,7 +61,7 @@ export default async function BatchesPage() {
                   <th className="px-5 py-3 font-medium">Uploaded</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-line-soft">
                 {batches.map((batch) => {
                   const percent =
                     batch.totalProducts === 0
@@ -71,15 +71,15 @@ export default async function BatchesPage() {
                     batch.status === BatchStatus.PROCESSING || batch.status === BatchStatus.QUEUED;
 
                   return (
-                    <tr key={batch.id} className="transition hover:bg-ink-50">
+                    <tr key={batch.id} className="transition hover:bg-canvas">
                       <td className="px-5 py-3.5">
                         <Link
                           href={`/dashboard/batches/${batch.id}`}
-                          className="font-medium text-ink-900 hover:text-accent-600"
+                          className="font-medium text-fg hover:text-accent"
                         >
                           {batch.name}
                         </Link>
-                        <p className="mt-0.5 truncate text-xs text-ink-500">{batch.originalFile}</p>
+                        <p className="mt-0.5 truncate text-xs text-muted">{batch.originalFile}</p>
                       </td>
                       <td className="px-5 py-3.5">
                         <BatchStatusBadge status={batch.status} />
@@ -89,18 +89,18 @@ export default async function BatchesPage() {
                           </div>
                         ) : null}
                       </td>
-                      <td className="px-5 py-3.5 tabular-nums text-ink-600">
+                      <td className="px-5 py-3.5 tabular-nums text-muted">
                         {batch.totalProducts.toLocaleString()}
                       </td>
-                      <td className="px-5 py-3.5 tabular-nums text-ink-600">
+                      <td className="px-5 py-3.5 tabular-nums text-muted">
                         {batch.successCount.toLocaleString()}
                         {batch.failedCount > 0 ? (
-                          <span className="ml-1.5 text-xs text-danger-600">
+                          <span className="ml-1.5 text-xs text-danger">
                             {batch.failedCount.toLocaleString()} failed
                           </span>
                         ) : null}
                       </td>
-                      <td className="whitespace-nowrap px-5 py-3.5 text-ink-500">
+                      <td className="whitespace-nowrap px-5 py-3.5 text-muted">
                         {formatDate(batch.createdAt)}
                       </td>
                     </tr>

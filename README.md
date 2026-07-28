@@ -1,11 +1,13 @@
-# CatalogForge
+# UPC Scanning
+
+<sub>upcscanning.com · UPC Scanning LLC</sub>
 
 **Upload a supplier product list. Download a folder of professional product images.**
 
 Wholesalers, distributors, and deal sellers receive spreadsheets full of SKUs,
 barcodes, and descriptions — and no photography. Someone then spends two days
 searching for each product, saving images, cutting out backgrounds, and renaming
-files. CatalogForge does that whole job from one upload.
+files. UPC Scanning does that whole job from one upload.
 
 ```
 supplier_list.xlsx  ──►  identify ──► find real photo ──► render ──►  catalog_images.zip
@@ -74,6 +76,22 @@ two similar products never collide, and every file maps back to a row.
 
 ---
 
+## Interface
+
+The product ships in **true black (#000000)** by default, with a one-click
+light theme (**#ffffff**) in the header. The choice is remembered per browser
+and applied by a blocking script before first paint, so a returning visitor
+never sees the wrong theme flash.
+
+Components never name a colour — they name a role (`canvas`, `surface`, `line`,
+`fg`, `muted`, `accent`). Both themes fill those roles, which is why the whole
+product flips by swapping CSS variables on `<html>` rather than by scattering
+`dark:` variants through every file. A test asserts that every token is defined
+in *both* themes, since one defined in only one is exactly how you end up with
+white text on white in a single mode.
+
+---
+
 ## Quick start
 
 ```bash
@@ -84,7 +102,7 @@ cp .env.example .env          # edit DATABASE_URL
 
 docker compose up -d postgres # or point DATABASE_URL at your own
 npx prisma migrate deploy
-npm run seed                  # creates demo@catalogforge.local
+npm run seed                  # creates demo@upcscanning.com
 
 npm run dev                   # http://localhost:3000
 ```

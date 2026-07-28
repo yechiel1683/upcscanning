@@ -9,6 +9,7 @@ import { generationStatus } from '@/server/providers/generate';
 import { understandingProvider } from '@/server/providers/llm/enrichment';
 import { lookupCacheStats, providerStatus } from '@/server/providers/search';
 import { queue } from '@/server/queue';
+import { Appearance } from './appearance';
 import { ApiKeys } from './api-keys';
 
 export const metadata: Metadata = { title: 'Settings' };
@@ -43,13 +44,18 @@ export default async function SettingsPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-ink-950">Settings</h1>
-        <p className="mt-1 text-sm text-ink-500">Your account, usage, and pipeline configuration.</p>
+        <h1 className="text-2xl font-semibold tracking-tight text-fg">Settings</h1>
+        <p className="mt-1 text-sm text-muted">Your account, usage, and pipeline configuration.</p>
       </div>
 
       <Card>
+        <CardHeader title="Appearance" description="Choose how the app looks in this browser." />
+        <Appearance />
+      </Card>
+
+      <Card>
         <CardHeader title="Account" />
-        <dl className="divide-y divide-ink-100 text-sm">
+        <dl className="divide-y divide-line-soft text-sm">
           <Row label="Email" value={user.email} />
           <Row label="Name" value={user.name ?? '—'} />
           <Row label="Plan" value={user.plan} />
@@ -69,13 +75,13 @@ export default async function SettingsPage() {
         </div>
 
         {ledger.length > 0 ? (
-          <div className="border-t border-ink-100">
-            <ul className="divide-y divide-ink-100">
+          <div className="border-t border-line-soft">
+            <ul className="divide-y divide-line-soft">
               {ledger.map((entry) => (
                 <li key={entry.id} className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm">
                   <div>
-                    <p className="text-ink-800">{describeReason(entry.reason)}</p>
-                    <p className="text-xs text-ink-500">
+                    <p className="text-fg">{describeReason(entry.reason)}</p>
+                    <p className="text-xs text-muted">
                       {formatDate(entry.createdAt)}
                       {entry.note ? ` · ${entry.note}` : ''}
                     </p>
@@ -83,8 +89,8 @@ export default async function SettingsPage() {
                   <span
                     className={
                       entry.delta > 0
-                        ? 'font-medium tabular-nums text-positive-600'
-                        : 'font-medium tabular-nums text-ink-600'
+                        ? 'font-medium tabular-nums text-positive'
+                        : 'font-medium tabular-nums text-muted'
                     }
                   >
                     {entry.delta > 0 ? '+' : ''}
@@ -109,18 +115,18 @@ export default async function SettingsPage() {
         />
         <div className="space-y-5 p-5">
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-500">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">
               Image sources — Workflow A
             </h3>
             <ul className="mt-2 grid gap-2 sm:grid-cols-2">
               {search.map((provider) => (
                 <li
                   key={provider.name}
-                  className="flex items-center justify-between rounded-lg border border-ink-200 px-3 py-2"
+                  className="flex items-center justify-between rounded-lg border border-line px-3 py-2"
                 >
-                  <span className="text-sm text-ink-800">
+                  <span className="text-sm text-fg">
                     {provider.name}
-                    <span className="ml-1.5 text-xs text-ink-500">({provider.kind})</span>
+                    <span className="ml-1.5 text-xs text-muted">({provider.kind})</span>
                   </span>
                   <Badge tone={provider.configured ? 'positive' : 'neutral'}>
                     {provider.configured ? (provider.keyless ? 'Active (free)' : 'Active') : 'No key'}
@@ -131,14 +137,14 @@ export default async function SettingsPage() {
           </section>
 
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-500">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">
               Fallback generation — Workflow B
             </h3>
-            <div className="mt-2 flex items-center justify-between rounded-lg border border-ink-200 px-3 py-2">
-              <span className="text-sm text-ink-800">
+            <div className="mt-2 flex items-center justify-between rounded-lg border border-line px-3 py-2">
+              <span className="text-sm text-fg">
                 {generation.provider ?? 'Disabled'}
                 {generation.reason ? (
-                  <span className="ml-1.5 text-xs text-ink-500">{generation.reason}</span>
+                  <span className="ml-1.5 text-xs text-muted">{generation.reason}</span>
                 ) : null}
               </span>
               <Badge tone={generation.enabled ? 'positive' : 'neutral'}>
@@ -148,8 +154,8 @@ export default async function SettingsPage() {
           </section>
 
           <section>
-            <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-500">Infrastructure</h3>
-            <dl className="mt-2 divide-y divide-ink-100 rounded-lg border border-ink-200 text-sm">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Infrastructure</h3>
+            <dl className="mt-2 divide-y divide-line-soft rounded-lg border border-line text-sm">
               <Row label="Queue" value={queue().name} compact />
               <Row label="Storage" value={config.STORAGE_DRIVER} compact />
               <Row
@@ -187,17 +193,17 @@ export default async function SettingsPage() {
 function Row({ label, value, compact }: { label: string; value: string; compact?: boolean }) {
   return (
     <div className={compact ? 'flex justify-between gap-3 px-3 py-2' : 'flex justify-between gap-3 px-5 py-3'}>
-      <dt className="text-ink-500">{label}</dt>
-      <dd className="text-right font-medium text-ink-900">{value}</dd>
+      <dt className="text-muted">{label}</dt>
+      <dd className="text-right font-medium text-fg">{value}</dd>
     </div>
   );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-ink-200 px-4 py-3">
-      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">{label}</p>
-      <p className="mt-1 text-xl font-semibold tracking-tight text-ink-950">{value}</p>
+    <div className="rounded-lg border border-line px-4 py-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
+      <p className="mt-1 text-xl font-semibold tracking-tight text-fg">{value}</p>
     </div>
   );
 }

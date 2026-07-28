@@ -209,7 +209,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
           title="We could not load this batch"
           description={error}
           action={
-            <Link href="/dashboard/batches" className="text-sm font-medium text-accent-600">
+            <Link href="/dashboard/batches" className="text-sm font-medium text-accent">
               Back to batches
             </Link>
           }
@@ -222,8 +222,8 @@ export function BatchClient({ batchId }: { batchId: string }) {
     return (
       <Card className="p-5">
         <div className="space-y-3">
-          <div className="h-5 w-48 animate-pulse rounded bg-ink-100" />
-          <div className="h-2 w-full animate-pulse rounded bg-ink-100" />
+          <div className="h-5 w-48 animate-pulse rounded bg-surface-2" />
+          <div className="h-2 w-full animate-pulse rounded bg-surface-2" />
         </div>
       </Card>
     );
@@ -239,17 +239,17 @@ export function BatchClient({ batchId }: { batchId: string }) {
         <div className="min-w-0">
           <Link
             href="/dashboard/batches"
-            className="text-sm text-ink-500 transition hover:text-ink-800"
+            className="text-sm text-muted transition hover:text-fg"
           >
             ← Batches
           </Link>
           <div className="mt-1.5 flex flex-wrap items-center gap-3">
-            <h1 className="truncate text-2xl font-semibold tracking-tight text-ink-950">
+            <h1 className="truncate text-2xl font-semibold tracking-tight text-fg">
               {batch.name}
             </h1>
             <BatchStatusBadge status={batch.status} />
           </div>
-          <p className="mt-1 text-sm text-ink-500">
+          <p className="mt-1 text-sm text-muted">
             {batch.originalFile} · {formatBytes(batch.fileSizeBytes)} · uploaded{' '}
             {formatDate(batch.createdAt)}
           </p>
@@ -281,16 +281,16 @@ export function BatchClient({ batchId }: { batchId: string }) {
       </div>
 
       {notice ? (
-        <p className="rounded-lg bg-accent-50 px-3 py-2 text-sm text-accent-700">{notice}</p>
+        <p className="rounded-lg bg-accent-soft px-3 py-2 text-sm text-accent">{notice}</p>
       ) : null}
 
       {/* Progress */}
       <Card className="p-5">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <p className="text-sm font-medium text-ink-900">
+          <p className="text-sm font-medium text-fg">
             {progress.finished.toLocaleString()} of {progress.total.toLocaleString()} processed
           </p>
-          <p className="text-sm text-ink-500">{progress.percent}%</p>
+          <p className="text-sm text-muted">{progress.percent}%</p>
         </div>
         <div className="mt-2.5">
           <ProgressBar
@@ -305,16 +305,16 @@ export function BatchClient({ batchId }: { batchId: string }) {
           {data.imageKinds.AI_GENERATED ? (
             <span className="flex items-center gap-1.5">
               <ImageKindBadge kind="AI_GENERATED" />
-              <span className="text-ink-600">{data.imageKinds.AI_GENERATED.toLocaleString()}</span>
+              <span className="text-muted">{data.imageKinds.AI_GENERATED.toLocaleString()}</span>
             </span>
           ) : null}
         </div>
 
         {progress.isRunning ? (
-          <p className="mt-3 flex items-center gap-2 text-xs text-ink-500">
+          <p className="mt-3 flex items-center gap-2 text-xs text-muted">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-500 opacity-60" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-accent-600" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent-soft0 opacity-60" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
             </span>
             Processing — this page updates itself.
           </p>
@@ -325,12 +325,12 @@ export function BatchClient({ batchId }: { batchId: string }) {
       {data.exports.length > 0 ? (
         <Card>
           <CardHeader title="Downloads" />
-          <ul className="divide-y divide-ink-100">
+          <ul className="divide-y divide-line-soft">
             {data.exports.map((item) => (
               <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-ink-900">{item.fileName}</p>
-                  <p className="mt-0.5 text-xs text-ink-500">
+                  <p className="truncate text-sm font-medium text-fg">{item.fileName}</p>
+                  <p className="mt-0.5 text-xs text-muted">
                     {item.status === 'READY'
                       ? `${item.imageCount.toLocaleString()} images · ${formatBytes(item.bytes)} · ${formatDate(item.createdAt)}`
                       : item.status === 'FAILED'
@@ -341,7 +341,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
                 {item.downloadUrl ? (
                   <a
                     href={item.downloadUrl}
-                    className="text-sm font-medium text-accent-600 hover:text-accent-700"
+                    className="text-sm font-medium text-accent hover:text-accent"
                   >
                     Download
                   </a>
@@ -362,7 +362,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
           title="Products"
           description={products ? `${products.total.toLocaleString()} shown` : undefined}
           action={
-            <div className="flex gap-1 rounded-lg bg-ink-100 p-0.5">
+            <div className="flex gap-1 rounded-lg bg-surface-2 p-0.5">
               {TABS.map((entry) => (
                 <button
                   key={entry.key}
@@ -373,7 +373,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
                   }}
                   className={cn(
                     'rounded-md px-2.5 py-1 text-xs font-medium transition',
-                    tab === entry.key ? 'bg-white text-ink-900 shadow-sm' : 'text-ink-500 hover:text-ink-800',
+                    tab === entry.key ? 'bg-surface text-fg shadow-sm' : 'text-muted hover:text-fg',
                   )}
                 >
                   {entry.label}
@@ -386,7 +386,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
         {!products ? (
           <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-4">
             {Array.from({ length: 8 }).map((_, index) => (
-              <div key={index} className="aspect-square animate-pulse rounded-lg bg-ink-100" />
+              <div key={index} className="aspect-square animate-pulse rounded-lg bg-surface-2" />
             ))}
           </div>
         ) : products.products.length === 0 ? (
@@ -407,7 +407,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
             </ul>
 
             {products.totalPages > 1 ? (
-              <div className="flex items-center justify-between border-t border-ink-100 px-5 py-3">
+              <div className="flex items-center justify-between border-t border-line-soft px-5 py-3">
                 <Button
                   variant="secondary"
                   size="sm"
@@ -416,7 +416,7 @@ export function BatchClient({ batchId }: { batchId: string }) {
                 >
                   Previous
                 </Button>
-                <p className="text-sm text-ink-500">
+                <p className="text-sm text-muted">
                   Page {products.page} of {products.totalPages}
                 </p>
                 <Button
@@ -446,11 +446,11 @@ function Metric({
   tone: 'positive' | 'danger' | 'muted';
 }) {
   const colour =
-    tone === 'positive' ? 'text-positive-600' : tone === 'danger' ? 'text-danger-600' : 'text-ink-600';
+    tone === 'positive' ? 'text-positive' : tone === 'danger' ? 'text-danger' : 'text-muted';
   return (
     <span className="flex items-baseline gap-1.5">
       <span className={cn('font-semibold tabular-nums', colour)}>{value.toLocaleString()}</span>
-      <span className="text-ink-500">{label}</span>
+      <span className="text-muted">{label}</span>
     </span>
   );
 }
@@ -459,10 +459,10 @@ function ProductCard({ product }: { product: ProductRow }) {
   const transparent = product.image?.fileName.endsWith('.png');
 
   return (
-    <li className="overflow-hidden rounded-xl border border-ink-200 bg-white">
+    <li className="overflow-hidden rounded-xl border border-line bg-surface">
       <div
         className={cn(
-          'relative flex aspect-square items-center justify-center overflow-hidden bg-ink-50',
+          'relative flex aspect-square items-center justify-center overflow-hidden bg-canvas',
           transparent && 'alpha-grid',
         )}
       >
@@ -478,7 +478,7 @@ function ProductCard({ product }: { product: ProductRow }) {
           />
         ) : product.status === 'FAILED' ? (
           <div className="px-4 text-center">
-            <svg viewBox="0 0 24 24" fill="none" className="mx-auto h-6 w-6 text-danger-600">
+            <svg viewBox="0 0 24 24" fill="none" className="mx-auto h-6 w-6 text-danger">
               <path
                 d="M12 8v5m0 3h.01M10.3 3.9 2.6 17.4A2 2 0 0 0 4.3 20.4h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"
                 stroke="currentColor"
@@ -489,7 +489,7 @@ function ProductCard({ product }: { product: ProductRow }) {
             </svg>
           </div>
         ) : (
-          <div className="h-full w-full animate-pulse bg-ink-100" />
+          <div className="h-full w-full animate-pulse bg-surface-2" />
         )}
 
         {product.image ? (
@@ -501,25 +501,25 @@ function ProductCard({ product }: { product: ProductRow }) {
 
       <div className="space-y-1.5 p-3">
         <div className="flex items-start justify-between gap-2">
-          <p className="line-clamp-2 text-sm font-medium leading-snug text-ink-900" title={product.name}>
+          <p className="line-clamp-2 text-sm font-medium leading-snug text-fg" title={product.name}>
             {product.name}
           </p>
           <ProductStatusBadge status={product.status} />
         </div>
 
-        <p className="truncate font-mono text-[11px] text-ink-500">
+        <p className="truncate font-mono text-[11px] text-muted">
           {product.outputName ?? product.sku ?? product.upc ?? `Row ${product.rowNumber}`}
         </p>
 
         {product.image ? (
-          <p className="text-[11px] text-ink-500">
+          <p className="text-[11px] text-muted">
             {product.image.width}×{product.image.height} · {formatBytes(product.image.bytes)}
             {product.image.provider ? ` · ${product.image.provider}` : ''}
           </p>
         ) : null}
 
         {product.errorMessage ? (
-          <p className="line-clamp-2 text-[11px] leading-snug text-danger-600" title={product.errorMessage}>
+          <p className="line-clamp-2 text-[11px] leading-snug text-danger" title={product.errorMessage}>
             {product.errorMessage}
           </p>
         ) : null}

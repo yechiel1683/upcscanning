@@ -12,8 +12,8 @@ export default async function RegisterPage() {
 
   return (
     <Card className="p-6">
-      <h1 className="text-lg font-semibold tracking-tight text-ink-950">Create your account</h1>
-      <p className="mt-1 mb-5 text-sm text-ink-500">
+      <h1 className="text-lg font-semibold tracking-tight text-fg">Create your account</h1>
+      <p className="mt-1 mb-5 text-sm text-muted">
         50 free images to try it on a real supplier list.
       </p>
       <AuthForm mode="register" />

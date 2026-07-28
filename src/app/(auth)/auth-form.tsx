@@ -87,7 +87,7 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
       {error ? (
         <p
           role="alert"
-          className="rounded-lg bg-danger-100 px-3 py-2 text-sm text-danger-600"
+          className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger"
         >
           {error}
         </p>
@@ -97,11 +97,11 @@ export function AuthForm({ mode }: { mode: 'login' | 'register' }) {
         {pending ? 'Just a moment…' : isRegister ? 'Create account' : 'Sign in'}
       </Button>
 
-      <p className="text-center text-sm text-ink-500">
+      <p className="text-center text-sm text-muted">
         {isRegister ? 'Already have an account? ' : "Don't have an account? "}
         <Link
           href={isRegister ? '/login' : '/register'}
-          className="font-medium text-accent-600 hover:text-accent-700"
+          className="font-medium text-accent hover:text-accent"
         >
           {isRegister ? 'Sign in' : 'Start free'}
         </Link>

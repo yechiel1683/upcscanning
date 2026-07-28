@@ -69,10 +69,10 @@ export default async function DashboardPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink-950">
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">
             {user.name ? `Welcome back, ${user.name.split(' ')[0]}` : 'Overview'}
           </h1>
-          <p className="mt-1 text-sm text-ink-500">
+          <p className="mt-1 text-sm text-muted">
             {batches === 0
               ? 'Upload a supplier list to get your first catalog.'
               : `${batches} batch${batches === 1 ? '' : 'es'} processed so far.`}
@@ -103,7 +103,7 @@ export default async function DashboardPage() {
             title="Recent batches"
             action={
               batches > 0 ? (
-                <Link href="/dashboard/batches" className="text-sm font-medium text-accent-600 hover:text-accent-700">
+                <Link href="/dashboard/batches" className="text-sm font-medium text-accent hover:text-accent">
                   View all
                 </Link>
               ) : null
@@ -116,7 +116,7 @@ export default async function DashboardPage() {
               action={<LinkButton href="/dashboard/upload">Upload a product list</LinkButton>}
             />
           ) : (
-            <ul className="divide-y divide-ink-100">
+            <ul className="divide-y divide-line-soft">
               {recentBatches.map((batch) => {
                 const percent =
                   batch.totalProducts === 0
@@ -129,12 +129,12 @@ export default async function DashboardPage() {
                   <li key={batch.id}>
                     <Link
                       href={`/dashboard/batches/${batch.id}`}
-                      className="block px-5 py-4 transition hover:bg-ink-50"
+                      className="block px-5 py-4 transition hover:bg-canvas"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-ink-900">{batch.name}</p>
-                          <p className="mt-0.5 text-xs text-ink-500">
+                          <p className="truncate text-sm font-medium text-fg">{batch.name}</p>
+                          <p className="mt-0.5 text-xs text-muted">
                             {batch.totalProducts.toLocaleString()} products · {formatDate(batch.createdAt)}
                           </p>
                         </div>
@@ -143,13 +143,13 @@ export default async function DashboardPage() {
                       {running ? (
                         <div className="mt-3">
                           <ProgressBar percent={percent} />
-                          <p className="mt-1.5 text-xs text-ink-500">
+                          <p className="mt-1.5 text-xs text-muted">
                             {batch.processedCount.toLocaleString()} of{' '}
                             {batch.totalProducts.toLocaleString()} processed
                           </p>
                         </div>
                       ) : (
-                        <p className="mt-2 text-xs text-ink-500">
+                        <p className="mt-2 text-xs text-muted">
                           {batch.successCount.toLocaleString()} images
                           {batch.failedCount > 0
                             ? ` · ${batch.failedCount.toLocaleString()} failed`
@@ -166,7 +166,7 @@ export default async function DashboardPage() {
 
         <Card>
           <CardHeader title="Pipeline configuration" description="What this instance can do right now." />
-          <dl className="divide-y divide-ink-100 text-sm">
+          <dl className="divide-y divide-line-soft text-sm">
             <ConfigRow
               label="Image sources"
               value={
@@ -198,10 +198,10 @@ export default async function DashboardPage() {
               ok={generation.enabled}
             />
           </dl>
-          <div className="border-t border-ink-100 px-5 py-4">
-            <p className="text-xs leading-relaxed text-ink-500">
+          <div className="border-t border-line-soft px-5 py-4">
+            <p className="text-xs leading-relaxed text-muted">
               Providers are configured with environment variables. See{' '}
-              <code className="rounded bg-ink-100 px-1 py-0.5 font-mono text-[11px]">.env.example</code>{' '}
+              <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-[11px]">.env.example</code>{' '}
               for the full list.
             </p>
           </div>
@@ -224,17 +224,17 @@ function Stat({
 }) {
   return (
     <Card className="px-5 py-4">
-      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">{label}</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-muted">{label}</p>
       <p
         className={
           tone === 'danger'
-            ? 'mt-1.5 text-2xl font-semibold tracking-tight text-danger-600'
-            : 'mt-1.5 text-2xl font-semibold tracking-tight text-ink-950'
+            ? 'mt-1.5 text-2xl font-semibold tracking-tight text-danger'
+            : 'mt-1.5 text-2xl font-semibold tracking-tight text-fg'
         }
       >
         {value}
       </p>
-      {hint ? <p className="mt-0.5 text-xs text-ink-500">{hint}</p> : null}
+      {hint ? <p className="mt-0.5 text-xs text-muted">{hint}</p> : null}
     </Card>
   );
 }
@@ -253,16 +253,16 @@ function ConfigRow({
   return (
     <div className="px-5 py-3.5">
       <div className="flex items-center justify-between gap-3">
-        <dt className="text-sm font-medium text-ink-800">{label}</dt>
-        <dd className="flex items-center gap-1.5 text-sm text-ink-600">
+        <dt className="text-sm font-medium text-fg">{label}</dt>
+        <dd className="flex items-center gap-1.5 text-sm text-muted">
           <span
             aria-hidden
-            className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-positive-600' : 'bg-ink-400'}`}
+            className={`h-1.5 w-1.5 rounded-full ${ok ? 'bg-positive' : 'bg-subtle'}`}
           />
           {value}
         </dd>
       </div>
-      <p className="mt-1 text-xs text-ink-500">{detail}</p>
+      <p className="mt-1 text-xs text-muted">{detail}</p>
     </div>
   );
 }

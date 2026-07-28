@@ -27,7 +27,7 @@ const str = z.string().optional().transform((v) => (v === '' ? undefined : v));
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
-  DATABASE_URL: z.string().default('postgresql://localhost:5432/catalogforge'),
+  DATABASE_URL: z.string().default('postgresql://localhost:5432/upcscanning'),
   // No signing secret is needed: a session is an opaque 32-byte random token,
   // stored server-side as a SHA-256 hash and revocable by deleting the row.
   APP_URL: z.string().default('http://localhost:3000'),

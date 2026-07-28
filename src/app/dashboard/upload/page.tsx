@@ -8,8 +8,8 @@ export default function UploadPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-ink-950">New upload</h1>
-        <p className="mt-1 text-sm text-ink-500">
+        <h1 className="text-2xl font-semibold tracking-tight text-fg">New upload</h1>
+        <p className="mt-1 text-sm text-muted">
           Give us a product list or just a column of barcodes — we build a professional image
           for every item, and fill in the details we find along the way.
         </p>

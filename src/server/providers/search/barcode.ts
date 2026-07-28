@@ -203,7 +203,7 @@ function openFactsProvider(name: string, host: string, confidence: number): Sear
       const data = await withRetry(() =>
         fetchJson<OpenFactsResponse>(
           `https://${host}/api/v2/product/${encodeURIComponent(context.upc!)}.json`,
-          { headers: { 'user-agent': 'CatalogForge/1.0 (product catalog tooling)' } },
+          { headers: { 'user-agent': 'UPCScanning/1.0 (product catalog tooling)' } },
         ),
       );
 

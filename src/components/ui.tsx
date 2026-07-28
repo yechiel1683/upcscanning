@@ -1,30 +1,34 @@
 import Link from 'next/link';
 import type { ComponentProps, ReactNode } from 'react';
 
-/** Small shared primitives. Kept deliberately plain — no component library. */
+/**
+ * Shared primitives. Every colour here is a semantic token, never a literal —
+ * that is what lets the whole product flip between the black and white themes
+ * without a single dark: variant.
+ */
 
 export function cn(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(' ');
 }
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-type ButtonSize = 'sm' | 'md';
+type ButtonSize = 'sm' | 'md' | 'lg';
 
 const BUTTON_BASE =
   'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition ' +
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-600 ' +
-  'disabled:cursor-not-allowed disabled:opacity-50';
+  'disabled:cursor-not-allowed disabled:opacity-45';
 
 const BUTTON_VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-accent-600 text-white hover:bg-accent-700 shadow-sm',
-  secondary: 'bg-white text-ink-800 ring-1 ring-ink-200 hover:bg-ink-50 shadow-sm',
-  ghost: 'text-ink-600 hover:bg-ink-100 hover:text-ink-900',
-  danger: 'bg-danger-600 text-white hover:opacity-90 shadow-sm',
+  primary: 'bg-accent text-accent-fg hover:bg-accent-hover shadow-card',
+  secondary: 'bg-surface-2 text-fg ring-1 ring-inset ring-line hover:bg-surface-3',
+  ghost: 'text-muted hover:bg-surface-2 hover:text-fg',
+  danger: 'bg-danger text-white hover:opacity-90',
 };
 
 const BUTTON_SIZES: Record<ButtonSize, string> = {
-  sm: 'px-3 py-1.5 text-sm',
+  sm: 'px-3 py-1.5 text-[13px]',
   md: 'px-4 py-2.5 text-sm',
+  lg: 'px-5 py-3 text-[15px]',
 };
 
 export function buttonClass(variant: ButtonVariant = 'primary', size: ButtonSize = 'md'): string {
@@ -49,15 +53,9 @@ export function LinkButton({
   return <Link className={cn(buttonClass(variant, size), className)} {...props} />;
 }
 
-export function Card({
-  className,
-  children,
-}: {
-  className?: string;
-  children: ReactNode;
-}) {
+export function Card({ className, children }: { className?: string; children: ReactNode }) {
   return (
-    <div className={cn('rounded-xl border border-ink-200 bg-white shadow-sm', className)}>
+    <div className={cn('rounded-xl border border-line bg-surface shadow-card', className)}>
       {children}
     </div>
   );
@@ -73,10 +71,10 @@ export function CardHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-ink-200 px-5 py-4">
+    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line-soft px-5 py-4">
       <div>
-        <h2 className="text-sm font-semibold text-ink-900">{title}</h2>
-        {description ? <p className="mt-0.5 text-sm text-ink-500">{description}</p> : null}
+        <h2 className="text-sm font-semibold text-fg">{title}</h2>
+        {description ? <p className="mt-0.5 text-sm text-muted">{description}</p> : null}
       </div>
       {action}
     </div>
@@ -86,11 +84,11 @@ export function CardHeader({
 type Tone = 'neutral' | 'accent' | 'positive' | 'warning' | 'danger';
 
 const TONES: Record<Tone, string> = {
-  neutral: 'bg-ink-100 text-ink-600 ring-ink-200',
-  accent: 'bg-accent-50 text-accent-700 ring-accent-100',
-  positive: 'bg-positive-100 text-positive-600 ring-positive-100',
-  warning: 'bg-warning-100 text-warning-600 ring-warning-100',
-  danger: 'bg-danger-100 text-danger-600 ring-danger-100',
+  neutral: 'bg-surface-2 text-muted ring-line',
+  accent: 'bg-accent-soft text-accent ring-accent-line',
+  positive: 'bg-positive-soft text-positive ring-positive-soft',
+  warning: 'bg-warning-soft text-warning ring-warning-soft',
+  danger: 'bg-danger-soft text-danger ring-danger-soft',
 };
 
 export function Badge({
@@ -128,26 +126,27 @@ export function Field({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={htmlFor} className="block text-sm font-medium text-ink-800">
+      <label htmlFor={htmlFor} className="block text-sm font-medium text-fg">
         {label}
       </label>
       {children}
-      {hint ? <p className="text-xs text-ink-500">{hint}</p> : null}
+      {hint ? <p className="text-xs text-muted">{hint}</p> : null}
     </div>
   );
 }
 
 export const inputClass =
-  'w-full rounded-lg border-0 bg-white px-3 py-2 text-sm text-ink-900 ring-1 ring-inset ' +
-  'ring-ink-200 placeholder:text-ink-400 focus:ring-2 focus:ring-inset focus:ring-accent-600';
+  'w-full rounded-lg border-0 bg-surface-2 px-3 py-2 text-sm text-fg ring-1 ring-inset ' +
+  'ring-line placeholder:text-subtle focus:ring-2 focus:ring-inset focus:ring-accent ' +
+  'focus:outline-none';
 
 export function ProgressBar({ percent, tone = 'accent' }: { percent: number; tone?: Tone }) {
   const clamped = Math.max(0, Math.min(100, percent));
   const fill =
-    tone === 'positive' ? 'bg-positive-600' : tone === 'danger' ? 'bg-danger-600' : 'bg-accent-600';
+    tone === 'positive' ? 'bg-positive' : tone === 'danger' ? 'bg-danger' : 'bg-accent';
   return (
     <div
-      className="h-2 w-full overflow-hidden rounded-full bg-ink-100"
+      className="h-1.5 w-full overflow-hidden rounded-full bg-surface-3"
       role="progressbar"
       aria-valuenow={clamped}
       aria-valuemin={0}
@@ -172,8 +171,8 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-      <h3 className="text-base font-semibold text-ink-900">{title}</h3>
-      <p className="max-w-md text-sm text-ink-500">{description}</p>
+      <h3 className="text-base font-semibold text-fg">{title}</h3>
+      <p className="max-w-md text-sm text-muted">{description}</p>
       {action}
     </div>
   );

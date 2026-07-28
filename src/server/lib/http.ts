@@ -127,7 +127,7 @@ export async function fetchBinary(
     headers: {
       // Some CDNs serve a 403 to clients without a browser-shaped UA.
       'user-agent':
-        'Mozilla/5.0 (compatible; CatalogForge/1.0; +https://github.com/yechiel1683/upcscanning)',
+        'Mozilla/5.0 (compatible; UPCScanning/1.0; +https://github.com/yechiel1683/upcscanning)',
       accept: 'image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5',
       ...rest.headers,
     },

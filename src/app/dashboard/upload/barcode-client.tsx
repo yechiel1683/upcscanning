@@ -116,14 +116,14 @@ export function BarcodeClient() {
             className={`${inputClass} resize-y font-mono text-sm`}
           />
 
-          <p className="text-sm text-ink-500">
+          <p className="text-sm text-muted">
             {count === 0
               ? 'No barcodes detected yet.'
               : `${count.toLocaleString()} barcode${count === 1 ? '' : 's'} detected.`}
           </p>
 
           {error ? (
-            <p role="alert" className="rounded-lg bg-danger-100 px-3 py-2 text-sm text-danger-600">
+            <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
               {error}
             </p>
           ) : null}
@@ -223,12 +223,12 @@ export function BarcodeClient() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-100 px-5 py-4">
-          <p className="text-sm text-ink-500">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
+          <p className="text-sm text-muted">
             {count > 0 ? (
               <>
                 This will use{' '}
-                <span className="font-medium text-ink-900">
+                <span className="font-medium text-fg">
                   {count.toLocaleString()} credit{count === 1 ? '' : 's'}
                 </span>
                 , one per barcode.
@@ -263,11 +263,11 @@ function Toggle({
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 h-4 w-4 rounded border-ink-200 text-accent-600 focus:ring-accent-600"
+        className="mt-0.5 h-4 w-4 rounded border-line text-accent focus:ring-accent"
       />
       <span>
-        <span className="block text-sm font-medium text-ink-800">{label}</span>
-        <span className="block text-xs text-ink-500">{hint}</span>
+        <span className="block text-sm font-medium text-fg">{label}</span>
+        <span className="block text-xs text-muted">{hint}</span>
       </span>
     </label>
   );

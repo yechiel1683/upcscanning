@@ -27,7 +27,7 @@ export function DashboardNav() {
             aria-current={active ? 'page' : undefined}
             className={cn(
               'whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition',
-              active ? 'bg-ink-100 text-ink-900' : 'text-ink-500 hover:bg-ink-50 hover:text-ink-800',
+              active ? 'bg-surface-2 text-fg' : 'text-muted hover:bg-canvas hover:text-fg',
             )}
           >
             {link.label}
@@ -54,7 +54,7 @@ export function SignOutButton() {
       type="button"
       onClick={signOut}
       disabled={pending}
-      className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-50"
+      className="rounded-lg px-3 py-1.5 text-sm font-medium text-muted transition hover:bg-surface-2 hover:text-fg disabled:opacity-50"
     >
       {pending ? 'Signing out…' : 'Sign out'}
     </button>

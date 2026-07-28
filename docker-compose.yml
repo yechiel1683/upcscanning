@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: catalogforge
-      POSTGRES_PASSWORD: catalogforge
-      POSTGRES_DB: catalogforge
+      POSTGRES_USER: upcscanning
+      POSTGRES_PASSWORD: upcscanning
+      POSTGRES_DB: upcscanning
     ports:
       - '5432:5432'
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U catalogforge']
+      test: ['CMD-SHELL', 'pg_isready -U upcscanning']
       interval: 5s
       timeout: 5s
       retries: 10
@@ -34,7 +34,7 @@ services:
       target: runner
     command: ['npm', 'run', 'start']
     environment:
-      DATABASE_URL: postgresql://catalogforge:catalogforge@postgres:5432/catalogforge?schema=public
+      DATABASE_URL: postgresql://upcscanning:upcscanning@postgres:5432/upcscanning?schema=public
       REDIS_URL: redis://redis:6379
       QUEUE_DRIVER: redis
       STORAGE_DRIVER: local
@@ -61,7 +61,7 @@ services:
       target: runner
     command: ['npm', 'run', 'worker']
     environment:
-      DATABASE_URL: postgresql://catalogforge:catalogforge@postgres:5432/catalogforge?schema=public
+      DATABASE_URL: postgresql://upcscanning:upcscanning@postgres:5432/upcscanning?schema=public
       REDIS_URL: redis://redis:6379
       QUEUE_DRIVER: redis
       STORAGE_DRIVER: local

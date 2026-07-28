@@ -186,7 +186,7 @@ export function UploadClient() {
             }}
             className={cn(
               'rounded-xl border-2 border-dashed px-6 py-10 text-center transition',
-              dragging ? 'border-accent-600 bg-accent-50' : 'border-ink-200 bg-ink-50',
+              dragging ? 'border-accent bg-accent-soft' : 'border-line bg-canvas',
             )}
           >
             <input
@@ -199,8 +199,8 @@ export function UploadClient() {
 
             {file ? (
               <div className="space-y-3">
-                <p className="text-sm font-medium text-ink-900">{file.name}</p>
-                <p className="text-xs text-ink-500">{formatBytes(file.size)}</p>
+                <p className="text-sm font-medium text-fg">{file.name}</p>
+                <p className="text-xs text-muted">{formatBytes(file.size)}</p>
                 <div className="flex justify-center gap-2">
                   <Button variant="secondary" size="sm" onClick={() => inputRef.current?.click()}>
                     Choose a different file
@@ -219,7 +219,7 @@ export function UploadClient() {
               </div>
             ) : (
               <div className="space-y-3">
-                <svg viewBox="0 0 24 24" fill="none" className="mx-auto h-8 w-8 text-ink-400">
+                <svg viewBox="0 0 24 24" fill="none" className="mx-auto h-8 w-8 text-subtle">
                   <path
                     d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
                     stroke="currentColor"
@@ -228,17 +228,17 @@ export function UploadClient() {
                     strokeLinejoin="round"
                   />
                 </svg>
-                <p className="text-sm text-ink-600">
+                <p className="text-sm text-muted">
                   Drag your spreadsheet here, or{' '}
                   <button
                     type="button"
                     onClick={() => inputRef.current?.click()}
-                    className="font-medium text-accent-600 underline-offset-2 hover:underline"
+                    className="font-medium text-accent underline-offset-2 hover:underline"
                   >
                     browse for it
                   </button>
                 </p>
-                <p className="text-xs text-ink-500">
+                <p className="text-xs text-muted">
                   We read the headers first and show you what we found before anything runs.
                 </p>
               </div>
@@ -246,11 +246,11 @@ export function UploadClient() {
           </div>
 
           {busy === 'preview' ? (
-            <p className="mt-4 text-sm text-ink-500">Reading the file…</p>
+            <p className="mt-4 text-sm text-muted">Reading the file…</p>
           ) : null}
 
           {error ? (
-            <p role="alert" className="mt-4 rounded-lg bg-danger-100 px-3 py-2 text-sm text-danger-600">
+            <p role="alert" className="mt-4 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
               {error}
             </p>
           ) : null}
@@ -294,18 +294,18 @@ export function UploadClient() {
             </div>
 
             {preview.unmappedHeaders.length > 0 ? (
-              <div className="border-t border-ink-100 px-5 py-3">
-                <p className="text-xs text-ink-500">
+              <div className="border-t border-line-soft px-5 py-3">
+                <p className="text-xs text-muted">
                   Kept but not used for matching:{' '}
-                  <span className="text-ink-600">{preview.unmappedHeaders.join(', ')}</span>
+                  <span className="text-muted">{preview.unmappedHeaders.join(', ')}</span>
                 </p>
               </div>
             ) : null}
 
             {preview.sample.length > 0 ? (
-              <div className="overflow-x-auto border-t border-ink-100">
+              <div className="overflow-x-auto border-t border-line-soft">
                 <table className="w-full min-w-[640px] text-left text-sm">
-                  <thead className="bg-ink-50 text-xs uppercase tracking-wide text-ink-500">
+                  <thead className="bg-canvas text-xs uppercase tracking-wide text-muted">
                     <tr>
                       <th className="px-5 py-2.5 font-medium">Row</th>
                       <th className="px-5 py-2.5 font-medium">Product</th>
@@ -314,14 +314,14 @@ export function UploadClient() {
                       <th className="px-5 py-2.5 font-medium">SKU</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-ink-100">
+                  <tbody className="divide-y divide-line-soft">
                     {preview.sample.map((product) => (
                       <tr key={product.rowNumber}>
-                        <td className="px-5 py-2.5 font-mono text-xs text-ink-400">{product.rowNumber}</td>
-                        <td className="max-w-xs truncate px-5 py-2.5 text-ink-900">{product.name}</td>
-                        <td className="px-5 py-2.5 text-ink-600">{product.brand ?? '—'}</td>
-                        <td className="px-5 py-2.5 font-mono text-xs text-ink-600">{product.upc ?? '—'}</td>
-                        <td className="px-5 py-2.5 font-mono text-xs text-ink-600">{product.sku ?? '—'}</td>
+                        <td className="px-5 py-2.5 font-mono text-xs text-subtle">{product.rowNumber}</td>
+                        <td className="max-w-xs truncate px-5 py-2.5 text-fg">{product.name}</td>
+                        <td className="px-5 py-2.5 text-muted">{product.brand ?? '—'}</td>
+                        <td className="px-5 py-2.5 font-mono text-xs text-muted">{product.upc ?? '—'}</td>
+                        <td className="px-5 py-2.5 font-mono text-xs text-muted">{product.sku ?? '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -330,10 +330,10 @@ export function UploadClient() {
             ) : null}
 
             {preview.skipped.length > 0 || preview.warnings.length > 0 ? (
-              <div className="space-y-2 border-t border-ink-100 px-5 py-4">
+              <div className="space-y-2 border-t border-line-soft px-5 py-4">
                 {preview.skippedCount > 0 ? (
-                  <p className="text-sm text-ink-600">
-                    <span className="font-medium text-ink-900">
+                  <p className="text-sm text-muted">
+                    <span className="font-medium text-fg">
                       {preview.skippedCount.toLocaleString()} row
                       {preview.skippedCount === 1 ? '' : 's'} skipped.
                     </span>{' '}
@@ -342,7 +342,7 @@ export function UploadClient() {
                   </p>
                 ) : null}
                 {preview.warnings.slice(0, 3).map((warning) => (
-                  <p key={`${warning.rowNumber}-${warning.message}`} className="text-xs text-warning-600">
+                  <p key={`${warning.rowNumber}-${warning.message}`} className="text-xs text-warning">
                     Row {warning.rowNumber}: {warning.message}
                   </p>
                 ))}
@@ -447,10 +447,10 @@ export function UploadClient() {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-100 px-5 py-4">
-              <p className="text-sm text-ink-500">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line-soft px-5 py-4">
+              <p className="text-sm text-muted">
                 This will use{' '}
-                <span className="font-medium text-ink-900">
+                <span className="font-medium text-fg">
                   {preview.productCount.toLocaleString()} credit
                   {preview.productCount === 1 ? '' : 's'}
                 </span>
@@ -484,11 +484,11 @@ function Toggle({
         type="checkbox"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 h-4 w-4 rounded border-ink-200 text-accent-600 focus:ring-accent-600"
+        className="mt-0.5 h-4 w-4 rounded border-line text-accent focus:ring-accent"
       />
       <span>
-        <span className="block text-sm font-medium text-ink-800">{label}</span>
-        <span className="block text-xs text-ink-500">{hint}</span>
+        <span className="block text-sm font-medium text-fg">{label}</span>
+        <span className="block text-xs text-muted">{hint}</span>
       </span>
     </label>
   );

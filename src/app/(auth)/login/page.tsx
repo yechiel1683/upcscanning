@@ -12,8 +12,8 @@ export default async function LoginPage() {
 
   return (
     <Card className="p-6">
-      <h1 className="text-lg font-semibold tracking-tight text-ink-950">Sign in</h1>
-      <p className="mt-1 mb-5 text-sm text-ink-500">
+      <h1 className="text-lg font-semibold tracking-tight text-fg">Sign in</h1>
+      <p className="mt-1 mb-5 text-sm text-muted">
         Pick up where your last upload left off.
       </p>
       <AuthForm mode="login" />

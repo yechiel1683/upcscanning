@@ -35,19 +35,19 @@ export function UploadModeSwitch() {
               className={cn(
                 'rounded-xl border px-4 py-3 text-left transition',
                 active
-                  ? 'border-accent-600 bg-accent-50 ring-1 ring-accent-600'
-                  : 'border-ink-200 bg-white hover:bg-ink-50',
+                  ? 'border-accent bg-accent-soft ring-1 ring-accent'
+                  : 'border-line bg-surface hover:bg-canvas',
               )}
             >
               <span
                 className={cn(
                   'block text-sm font-semibold',
-                  active ? 'text-accent-700' : 'text-ink-900',
+                  active ? 'text-accent' : 'text-fg',
                 )}
               >
                 {entry.label}
               </span>
-              <span className="mt-0.5 block text-xs text-ink-500">{entry.hint}</span>
+              <span className="mt-0.5 block text-xs text-muted">{entry.hint}</span>
             </button>
           );
         })}

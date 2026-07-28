@@ -259,7 +259,7 @@ function buildReport(
   const pct = (n: number) => (total === 0 ? '0.0' : ((n / total) * 100).toFixed(1));
 
   return [
-    'CatalogForge — Processing Report',
+    'UPC Scanning — Processing Report',
     '='.repeat(64),
     '',
     `Batch:            ${batch.name}`,
@@ -306,7 +306,7 @@ function buildReport(
 
 function buildReadme(layout: ExportLayout, aiCount: number): string {
   return [
-    'CatalogForge export',
+    'UPC Scanning export',
     '='.repeat(64),
     '',
     'Contents',

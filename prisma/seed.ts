@@ -10,8 +10,8 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-const DEMO_EMAIL = process.env.SEED_EMAIL ?? 'demo@catalogforge.local';
-const DEMO_PASSWORD = process.env.SEED_PASSWORD ?? 'catalogforge-demo';
+const DEMO_EMAIL = process.env.SEED_EMAIL ?? 'demo@upcscanning.com';
+const DEMO_PASSWORD = process.env.SEED_PASSWORD ?? 'upcscanning-demo';
 const DEMO_CREDITS = 500;
 
 async function main() {

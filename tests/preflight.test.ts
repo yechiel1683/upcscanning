@@ -31,7 +31,7 @@ function find(checks: Check[], fragment: string): Check | undefined {
 
 const healthyProduction = {
   NODE_ENV: 'production',
-  DATABASE_URL: 'postgresql://user:pw@db.internal:5432/catalogforge',
+  DATABASE_URL: 'postgresql://user:pw@db.internal:5432/upcscanning',
   STORAGE_DRIVER: 's3',
   S3_BUCKET: 'catalog',
   QUEUE_DRIVER: 'redis',
@@ -112,7 +112,7 @@ describe('inspectConfiguration', () => {
   it('does not nag about local storage or inline queues in development', () => {
     const checks = configure({
       NODE_ENV: 'development',
-      DATABASE_URL: 'postgresql://localhost:5432/catalogforge',
+      DATABASE_URL: 'postgresql://localhost:5432/upcscanning',
       STORAGE_DRIVER: 'local',
       QUEUE_DRIVER: 'inline',
       OPENAI_API_KEY: 'sk-test',

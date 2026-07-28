@@ -1,4 +1,4 @@
-// CatalogForge data model.
+// UPC Scanning data model.
 //
 // The shape here follows the lifecycle of a job: a user uploads a spreadsheet
 // (Batch), which fans out into Products, each of which produces zero or more

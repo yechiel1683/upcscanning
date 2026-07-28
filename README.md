@@ -92,6 +92,26 @@ white text on white in a single mode.
 
 ---
 
+## Try it without a database
+
+Setting up Postgres to answer "does this work on my products?" is a barrier
+worth removing, so the app runs a guest mode with no account and no database:
+
+```bash
+npm install && npm run dev     # open /try
+```
+
+Paste barcodes or drop a spreadsheet and the real pipeline runs — same
+identification, same search, same renderer, same ZIP. The differences are that
+results live in memory for a few hours instead of Postgres, and a guest session
+is capped (25 images, 25 products per batch) because unbounded in-memory state
+on a public endpoint is a denial-of-service waiting to happen.
+
+The deliverable is assembled by the same code either way, so a guest ZIP and an
+account ZIP are byte-identical apart from a note in the report.
+
+---
+
 ## Quick start
 
 ```bash

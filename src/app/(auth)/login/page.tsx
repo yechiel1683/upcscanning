@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { Card } from '@/components/ui';
@@ -21,6 +22,13 @@ export default async function LoginPage() {
         </p>
         <AuthForm mode="login" />
       </Card>
+
+      <p className="mt-4 text-center text-sm text-muted">
+        Just want to see it work?{' '}
+        <Link href="/try" className="font-medium text-accent hover:text-accent-hover">
+          Try it without an account
+        </Link>
+      </p>
     </>
   );
 }

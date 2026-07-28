@@ -87,12 +87,12 @@ export default async function LandingPage() {
                   <LinkButton href="/register" size="lg">
                     Start with 50 free images
                   </LinkButton>
-                  <LinkButton href="/login" variant="secondary" size="lg">
-                    Sign in
+                  <LinkButton href="/try" variant="secondary" size="lg">
+                    Try it without an account
                   </LinkButton>
                 </div>
 
-                <p className="mt-4 text-sm text-subtle">No card required.</p>
+                <p className="mt-4 text-sm text-subtle">No card required. No account needed to try it.</p>
               </div>
 
               <BeforeAfter />

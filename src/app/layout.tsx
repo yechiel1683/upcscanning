@@ -12,7 +12,9 @@ const DESCRIPTION =
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: `${BRAND} — barcodes in, product images out`,
+    // Just the name in the tab. The value proposition belongs in the
+    // description, which is what search results render underneath it.
+    default: BRAND,
     template: `%s · ${BRAND}`,
   },
   description: DESCRIPTION,
@@ -25,7 +27,7 @@ export const metadata: Metadata = {
     type: 'website',
     siteName: BRAND,
     url: SITE_URL,
-    title: `${BRAND} — ${TAGLINE}`,
+    title: BRAND,
     description: DESCRIPTION,
     images: [{ url: '/og.png', width: 1200, height: 630, alt: BRAND }],
   },

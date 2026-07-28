@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 
 import { authenticate, type SessionUser } from '@/server/auth/session';
+import { asDatabaseProblem } from './errors';
 
 /** Consistent JSON envelopes so the dashboard can handle every error the same way. */
 
@@ -30,6 +31,13 @@ export function handleError(error: unknown): NextResponse {
       422,
       { issues: error.issues },
     );
+  }
+
+  // A misconfigured database is not a mystery to be retried — say what it is.
+  const database = asDatabaseProblem(error);
+  if (database) {
+    console.error(`[api] database ${database.fault}:`, error);
+    return fail(database.message, 503, { fault: database.fault });
   }
 
   console.error('[api] unhandled error', error);

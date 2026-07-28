@@ -72,14 +72,17 @@ export async function currentUser(): Promise<SessionUser | null> {
 }
 
 export async function userFromToken(token: string): Promise<SessionUser | null> {
-  const session = await prisma.session.findUnique({
-    where: { tokenHash: hashToken(token) },
-    include: {
-      user: {
-        select: { id: true, email: true, name: true, plan: true, credits: true, createdAt: true },
-      },
-    },
-  });
+  let session: Awaited<ReturnType<typeof findSession>>;
+  try {
+    session = await findSession(token);
+  } catch (error) {
+    // Documented as never throwing, and it has to be: this runs in the layout
+    // of every page, so letting a database outage escape here takes down the
+    // marketing page and the sign-in form — the two pages someone needs most
+    // when the database is the thing that is broken.
+    console.error('[auth] session lookup failed', error);
+    return null;
+  }
 
   if (!session) return null;
   if (session.expiresAt < new Date()) {
@@ -88,6 +91,17 @@ export async function userFromToken(token: string): Promise<SessionUser | null> 
   }
 
   return session.user;
+}
+
+function findSession(token: string) {
+  return prisma.session.findUnique({
+    where: { tokenHash: hashToken(token) },
+    include: {
+      user: {
+        select: { id: true, email: true, name: true, plan: true, credits: true, createdAt: true },
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

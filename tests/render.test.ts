@@ -48,6 +48,31 @@ async function noisyPhoto(width = 400, height = 400): Promise<Buffer> {
   return sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
 }
 
+/** Wide body on a narrow stem — the shape a bar-shaped shadow gets wrong. */
+async function wideBodyNarrowBase(size = 900): Promise<Buffer> {
+  return sharp({
+    create: { width: size, height: size, channels: 3, background: { r: 255, g: 255, b: 255 } },
+  })
+    .composite([
+      {
+        input: {
+          create: { width: 600, height: 220, channels: 3, background: { r: 200, g: 30, b: 40 } },
+        },
+        left: 150,
+        top: 180,
+      },
+      {
+        input: {
+          create: { width: 90, height: 300, channels: 3, background: { r: 200, g: 30, b: 40 } },
+        },
+        left: 405,
+        top: 400,
+      },
+    ])
+    .png()
+    .toBuffer();
+}
+
 async function rawOf(buffer: Buffer) {
   const { data, info } = await sharp(buffer).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { data, width: info.width, height: info.height, channels: info.channels };
@@ -298,6 +323,53 @@ describe('renderProductImage', () => {
     // The badge sits bottom-right and is dark on a light background.
     const badgePixel = await pixelAt(result.buffer, 900, 965);
     expect(badgePixel.r).toBeLessThan(180);
+  });
+
+  it('places the contact shadow under the base, not as a bar across the frame', async () => {
+    // The first implementation squashed the whole silhouette into a strip and
+    // blurred it, producing a hard grey rectangle spanning the frame — a wide
+    // product's outline stays wide all the way down. The shadow must instead
+    // track where the product actually meets the ground.
+    const result = await renderProductImage({
+      buffer: await wideBodyNarrowBase(),
+      options: { ...options, dropShadow: true },
+    });
+
+    const { data, info } = await sharp(result.buffer)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    // Find the darkest row below the product — the shadow's core.
+    let widest = 0;
+    let darkest = 255;
+    for (let row = Math.round(info.height * 0.86); row < info.height; row += 1) {
+      let count = 0;
+      for (let x = 0; x < info.width; x += 1) {
+        const value = data[(row * info.width + x) * info.channels] ?? 255;
+        if (value < 248) count += 1;
+        if (value < darkest) darkest = value;
+      }
+      if (count > widest) widest = count;
+    }
+
+    // There is a visible shadow...
+    expect(widest).toBeGreaterThan(0);
+    // ...it is soft rather than a solid slab...
+    expect(darkest).toBeGreaterThan(140);
+    // ...and it tracks the ~90px base, not the ~600px body above it. The bar
+    // this replaced spanned about 77% of the frame.
+    expect(widest).toBeLessThan(info.width * 0.4);
+  });
+
+  it('leaves the backdrop clean when the shadow is turned off', async () => {
+    const result = await renderProductImage({
+      buffer: await studioPhoto(),
+      options: { ...options, dropShadow: false, padding: 0.15 },
+    });
+
+    const belowProduct = await pixelAt(result.buffer, 500, 960);
+    expect(belowProduct.r).toBeGreaterThan(250);
   });
 
   it('reports metrics describing what it did', async () => {

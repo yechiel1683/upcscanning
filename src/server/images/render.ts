@@ -1,7 +1,12 @@
 import sharp from 'sharp';
 
 import type { BackgroundStyle, OutputFormat, RenderOptions } from '@/lib/types';
-import { analyseBorder, buildForegroundMask, featherMask } from './background';
+import {
+  analyseBorder,
+  buildForegroundMask,
+  featherMask,
+  type MaskResult,
+} from './background';
 
 /**
  * The rendering pipeline.
@@ -110,6 +115,7 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   let backgroundRemoved = false;
   let foregroundRatio: number | undefined;
   let maskConfidence: number | undefined;
+  let silhouette: MaskResult | null = null;
 
   if (alreadyTransparent) {
     // The source is already a cutout; trimming its alpha is enough.
@@ -140,6 +146,7 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
           .toBuffer(),
       ).trim({ threshold: 1 });
       backgroundRemoved = true;
+      silhouette = mask;
     } else {
       // Not confident enough to cut out. If the backdrop is at least uniform we
       // can still trim the flat margins so framing stays consistent.
@@ -193,13 +200,12 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   const layers: sharp.OverlayOptions[] = [];
 
   if (options.dropShadow && backgroundRemoved && options.background !== 'transparent') {
-    const shadow = await buildContactShadow(resized.data, productWidth, productHeight);
+    const shadow = buildContactShadow(silhouette, productWidth, productHeight);
     if (shadow) {
       layers.push({
         input: shadow.buffer,
         left: Math.max(0, left - shadow.pad),
-        // The shadow sits just under the product's base.
-        top: Math.min(options.height - 1, top - shadow.pad + Math.round(productHeight * 0.03)),
+        top: Math.max(0, top - shadow.pad),
       });
     }
   }
@@ -386,62 +392,90 @@ async function createCanvas(options: RenderOptions): Promise<Buffer> {
  * alpha channel, squash it vertically so it reads as a shadow on a surface,
  * blur it, and tint it dark.
  */
-async function buildContactShadow(
-  productRaw: Buffer,
+function buildContactShadow(
+  silhouette: MaskResult | null,
   width: number,
   height: number,
-): Promise<{ buffer: Buffer; pad: number } | null> {
+): { buffer: Buffer; pad: number } | null {
   try {
+    const footprint = measureFootprint(silhouette, width);
+    if (!footprint) return null;
+
     const pad = Math.max(8, Math.round(Math.max(width, height) * 0.06));
-    const blur = Math.max(4, Math.round(Math.max(width, height) * 0.022));
-
-    const alpha = await sharp(productRaw).ensureAlpha().extractChannel(3).toBuffer();
-
-    // Squash to ~18% height and anchor to the bottom of the product.
-    const shadowHeight = Math.max(4, Math.round(height * 0.18));
-    const squashed = await sharp(alpha)
-      .resize(Math.round(width * 0.92), shadowHeight, { fit: 'fill' })
-      .blur(blur)
-      // Shadows are soft, not solid.
-      .linear(0.42, 0)
-      .toBuffer();
-
     const canvasWidth = width + pad * 2;
     const canvasHeight = height + pad * 2;
 
-    const shadowLayer = await sharp({
-      create: {
-        width: canvasWidth,
-        height: canvasHeight,
-        channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 },
-      },
-    })
-      .composite([
-        {
-          input: await sharp({
-            create: {
-              width: Math.round(width * 0.92),
-              height: shadowHeight,
-              channels: 3,
-              background: { r: 22, g: 24, b: 28 },
-            },
-          })
-            .joinChannel(squashed)
-            .png()
-            .toBuffer(),
-          left: pad + Math.round(width * 0.04),
-          top: pad + height - Math.round(shadowHeight * 0.55),
-        },
-      ])
-      .png()
-      .toBuffer();
+    // A little wider than the base so the product looks seated rather than
+    // balanced, and shallow enough to read as ground rather than as an object.
+    const rx = Math.max(6, Math.round(footprint.width * 0.75));
+    const ry = Math.max(3, Math.round(Math.min(height * 0.03, rx * 0.3)));
+    const cx = pad + footprint.centerX;
+    // Straddle the bottom edge, most of it below: centred any higher and the
+    // product simply covers its own shadow.
+    const cy = pad + height + Math.round(ry * 0.25);
+    // A radial gradient rather than a blurred silhouette: the falloff is
+    // explicit, so it stays soft at any output size instead of depending on a
+    // blur radius that must be re-tuned per resolution.
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasWidth}" height="${canvasHeight}">
+      <defs>
+        <radialGradient id="s" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#0b0d12" stop-opacity="0.32"/>
+          <stop offset="45%" stop-color="#0b0d12" stop-opacity="0.18"/>
+          <stop offset="100%" stop-color="#0b0d12" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="url(#s)"/>
+    </svg>`;
 
-    return { buffer: shadowLayer, pad };
+    // sharp composites an SVG buffer directly, so the gradient is rasterised
+    // at the output resolution rather than scaled from a bitmap.
+    return { buffer: Buffer.from(svg), pad };
   } catch {
     // A missing shadow is cosmetic; never fail a render over it.
     return null;
   }
+}
+
+/**
+ * Horizontal extent of the product's base, taken from the segmentation mask.
+ *
+ * The mask is used rather than the rendered product's alpha channel because a
+ * sharp round-trip through an encoded buffer silently returned a fully opaque
+ * alpha, which measured every product as full width and turned the shadow into
+ * a grey bar across the frame. The mask is already computed, exact, and needs
+ * no decoding.
+ */
+function measureFootprint(
+  silhouette: MaskResult | null,
+  width: number,
+): { centerX: number; width: number } | null {
+  if (!silhouette?.bounds) return null;
+  const { mask, bounds } = silhouette;
+
+  // The bottom eighth of the product's bounding box is what rests on a surface.
+  const fromRow = Math.floor(bounds.top + bounds.height * 0.875);
+  let minX = Number.POSITIVE_INFINITY;
+  let maxX = -1;
+
+  for (let y = fromRow; y < bounds.top + bounds.height; y += 1) {
+    const row = y * silhouette.width;
+    for (let x = bounds.left; x < bounds.left + bounds.width; x += 1) {
+      if (mask[row + x] === 255) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+  }
+
+  if (maxX < minX) return null;
+
+  // Mask coordinates are relative to the analysis image; the product was
+  // trimmed to `bounds`, so normalise into the rendered product's width.
+  const scale = width / bounds.width;
+  return {
+    centerX: ((minX + maxX) / 2 - bounds.left) * scale,
+    width: Math.min((maxX - minX + 1) * scale, width * 0.9),
+  };
 }
 
 /**

@@ -80,7 +80,7 @@ two similar products never collide, and every file maps back to a row.
 git clone https://github.com/yechiel1683/upcscanning.git
 cd upcscanning
 npm install
-cp .env.example .env          # edit DATABASE_URL and AUTH_SECRET
+cp .env.example .env          # edit DATABASE_URL
 
 docker compose up -d postgres # or point DATABASE_URL at your own
 npx prisma migrate deploy
@@ -113,11 +113,38 @@ QUEUE_DRIVER=redis npm run dev
 QUEUE_DRIVER=redis npm run dev:worker   # in a second terminal
 ```
 
+### Deploying to Railway
+
+Railway builds the `Dockerfile` and reads `railway.json` for the healthcheck
+and restart policy. Three things to set up:
+
+1. **Add a Postgres service**, then set this service's `DATABASE_URL` to
+   reference it (`${{Postgres.DATABASE_URL}}`). Migrations run automatically on
+   every boot — see `scripts/release.ts` — so there is no manual release step.
+   If the database is unreachable the container refuses to start rather than
+   serving errors on every request.
+
+2. **Set `OPENAI_API_KEY`.** That one key covers identification, web image
+   search, and fallback generation.
+
+3. **Give the images somewhere durable to live.** By default they are written
+   to the container filesystem, which is wiped on every redeploy — so a catalog
+   generated on Monday is gone after Tuesday's deploy. Either:
+   - attach a Railway **volume** and set `STORAGE_LOCAL_DIR` to its mount path, or
+   - set `STORAGE_DRIVER=s3` with the `S3_*` variables.
+
+The app prints a preflight report at boot listing anything misconfigured,
+including this one, so a broken deployment says so in the logs instead of
+failing quietly at request time.
+
+For real throughput, add a Redis service, set `QUEUE_DRIVER=redis` and
+`REDIS_URL`, and run a second Railway service from the same repo with the start
+command `npm run worker`.
+
 ### Everything in Docker
 
 ```bash
-docker compose up --build
-docker compose exec web npx prisma migrate deploy
+docker compose up --build               # migrations run on start
 docker compose up --scale worker=4      # more throughput
 ```
 
@@ -131,7 +158,6 @@ the full annotated list.
 | Capability | Variables | Without it |
 | --- | --- | --- |
 | Database | `DATABASE_URL` | Required |
-| Sessions | `AUTH_SECRET` | Required |
 | Queue | `QUEUE_DRIVER`, `REDIS_URL` | `inline` — jobs run in the web process |
 | Storage | `STORAGE_DRIVER`, `S3_*` | `local` — files under `./storage` |
 | Product understanding | `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` | Heuristic brand/model extraction |
@@ -290,6 +316,7 @@ npm run dev:worker   # worker (needs QUEUE_DRIVER=redis)
 npm test             # vitest
 npm run typecheck
 npm run build
+npm run release      # apply migrations + print the preflight report
 npm run prisma:studio
 ```
 

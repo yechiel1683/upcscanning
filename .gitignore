@@ -1,19 +1,24 @@
 node_modules/
-.next/
-out/
-build/
-dist/
 *.tsbuildinfo
 next-env.d.ts
+
+# Build output. These are anchored with a leading slash so they only match the
+# repository root: an unanchored "storage/" also matches src/server/storage/,
+# which silently kept a source directory out of the repo and broke deploys
+# while every local build kept working.
+/.next/
+/out/
+/build/
+/dist/
+/coverage/
+
+# Local storage driver output.
+/storage/
+/tmp/
 
 .env
 .env.local
 .env.*.local
-
-# Local storage driver output
-storage/
-tmp/
-coverage/
 
 .DS_Store
 *.log

@@ -33,6 +33,18 @@ export const MARK_BAR_HEIGHT = 14;
 /** Corner radius as a fraction of the tile, matching the iOS squircle ratio. */
 export const MARK_RADIUS_RATIO = 0.22;
 
+/**
+ * Tight bounding box of the bars alone, for rendering the mark without its
+ * tile. The 32×32 space includes the margins a tile needs; drawn bare, those
+ * margins would just make the mark look small next to the wordmark.
+ */
+export const MARK_BARS_BOX = {
+  x: MARK_BARS[0]!.x,
+  y: MARK_BAR_Y,
+  width: MARK_BARS[MARK_BARS.length - 1]!.x + MARK_BARS[MARK_BARS.length - 1]!.w - MARK_BARS[0]!.x,
+  height: MARK_BAR_HEIGHT,
+};
+
 export interface MarkOptions {
   size: number;
   /** Inset the mark inside the tile, as a fraction of size. */

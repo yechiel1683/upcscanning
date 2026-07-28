@@ -1,6 +1,6 @@
 import Link from 'next/link';
 
-import { MARK_BARS, MARK_BAR_HEIGHT, MARK_BAR_Y, MARK_VIEWBOX } from '@/lib/brand-mark';
+import { MARK_BARS, MARK_BARS_BOX, MARK_BAR_HEIGHT, MARK_BAR_Y } from '@/lib/brand-mark';
 import { cn } from './ui';
 
 export const COMPANY = 'UPC Scanning LLC';
@@ -22,15 +22,18 @@ export function Logo({ className }: { className?: string }) {
     <span
       aria-hidden
       className={cn(
-        // Always a black tile with white bars, in both themes. On the black
-        // canvas the hairline ring is what gives it an edge.
-        'flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px] bg-black ring-1 ring-inset ring-white/15',
+        // No tile and no outline in-app: just the bars, drawn in the current
+        // text colour so the mark is white on black and black on white. A
+        // hairline edge around a black square reads as a sticker, not a brand.
+        // The favicon keeps its tile — a browser tab has no canvas of ours to
+        // sit on, so it has to carry its own.
+        'flex h-8 w-8 shrink-0 items-center justify-center text-fg',
         className,
       )}
     >
       <svg
-        viewBox={`0 0 ${MARK_VIEWBOX} ${MARK_VIEWBOX}`}
-        className="h-full w-full"
+        viewBox={`${MARK_BARS_BOX.x} ${MARK_BARS_BOX.y} ${MARK_BARS_BOX.width} ${MARK_BARS_BOX.height}`}
+        className="h-[78%] w-full"
         role="presentation"
       >
         {MARK_BARS.map((bar) => (
@@ -41,7 +44,7 @@ export function Logo({ className }: { className?: string }) {
             width={bar.w}
             height={MARK_BAR_HEIGHT}
             rx={0.5}
-            fill="#ffffff"
+            fill="currentColor"
           />
         ))}
       </svg>

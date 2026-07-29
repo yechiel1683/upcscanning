@@ -7,6 +7,7 @@ import {
   featherMask,
   type MaskResult,
 } from './background';
+import { analyseOverlays, eraseOverlays } from './overlay';
 
 /**
  * The rendering pipeline.
@@ -42,6 +43,8 @@ export interface RenderMetrics {
   maskConfidence?: number;
   detail: number;
   backgroundRemoved: boolean;
+  /** A composited marketing panel was excluded from the subject. */
+  overlayRemoved: boolean;
   upscaled: boolean;
 }
 
@@ -73,6 +76,7 @@ export async function analyseImage(buffer: Buffer): Promise<{
   foregroundRatio: number;
   maskConfidence: number;
   detail: number;
+  overlayShare: number;
 }> {
   const image = sharp(buffer, { failOn: 'none' }).rotate();
   const metadata = await image.metadata();
@@ -83,6 +87,7 @@ export async function analyseImage(buffer: Buffer): Promise<{
   const { data, info } = await downscaleToRaw(buffer);
   const border = analyseBorder(data, info.width, info.height, info.channels);
   const mask = buildForegroundMask(data, info.width, info.height, { channels: info.channels });
+  const overlays = analyseOverlays(data, info.width, info.height, info.channels, mask.mask);
 
   return {
     width,
@@ -92,6 +97,10 @@ export async function analyseImage(buffer: Buffer): Promise<{
     foregroundRatio: mask.foregroundRatio,
     maskConfidence: mask.confidence,
     detail: measureDetail(data, info.width, info.height, info.channels),
+    // Only report furniture we could actually separate from a product. When the
+    // whole foreground reads as one drawn rectangle we cannot tell a banner from
+    // a flat-packaged product, and penalising the image would be a guess.
+    overlayShare: overlays.productMask ? overlays.panelShareOfForeground : 0,
   };
 }
 
@@ -115,6 +124,7 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   let backgroundRemoved = false;
   let foregroundRatio: number | undefined;
   let maskConfidence: number | undefined;
+  let overlayRemoved = false;
   let silhouette: MaskResult | null = null;
 
   if (alreadyTransparent) {
@@ -122,26 +132,73 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
     backgroundRemoved = true;
     subject = subject.trim({ threshold: 1 });
   } else if (options.removeBackground || options.background === 'transparent') {
-    const mask = buildForegroundMask(smallData, smallInfo.width, smallInfo.height, {
+    const raw = buildForegroundMask(smallData, smallInfo.width, smallInfo.height, {
       channels: smallInfo.channels,
     });
+
+    // Drop any composited marketing furniture before the cutout, so what gets
+    // trimmed and centred is the product rather than the product plus somebody
+    // else's banner. Erasing the panels and segmenting again — rather than just
+    // subtracting them from the mask — is what lets the cutout proceed at all:
+    // confidence is judged partly on how uniform the frame border is, and a
+    // banner reaching the edge is exactly what ruins it.
+    const overlays = analyseOverlays(
+      smallData,
+      smallInfo.width,
+      smallInfo.height,
+      smallInfo.channels,
+      raw.mask,
+    );
+
+    let mask = raw;
+    let overlaysErased = false;
+    if (overlays.productMask) {
+      const cleaned = eraseOverlays(
+        smallData,
+        smallInfo.channels,
+        raw.mask,
+        overlays.productMask,
+        raw.backgroundColor,
+      );
+      mask = buildForegroundMask(cleaned, smallInfo.width, smallInfo.height, {
+        channels: smallInfo.channels,
+      });
+      overlaysErased = true;
+    }
+
     foregroundRatio = mask.foregroundRatio;
     maskConfidence = mask.confidence;
 
     if (mask.confidence >= CUTOUT_CONFIDENCE_THRESHOLD && mask.bounds) {
+      // Only claim the furniture is gone on the path that actually cuts it out.
+      // The trim fallback below leaves the source pixels untouched.
+      overlayRemoved = overlaysErased;
       const feathered = featherMask(mask.mask, mask.width, mask.height, 1);
-      const fullAlpha = await sharp(Buffer.from(feathered), {
-        raw: { width: mask.width, height: mask.height, channels: 1 },
+
+      // Carry the mask as the *alpha* of an RGBA image and erase with `dest-in`.
+      //
+      // The obvious route — resize the mask to a one-channel buffer and
+      // `joinChannel` it onto the source — does not work, and fails silently,
+      // which is worse. Given one-channel raw input and no explicit output
+      // format sharp promotes greyscale to three-channel sRGB, so the buffer is
+      // three times the expected length; `joinChannel` then either misreads it
+      // or drops the band entirely, and the result is a fully opaque image. No
+      // error is raised anywhere. It went unnoticed because every fixture was a
+      // dark subject on white composited back onto white, where a cutout that
+      // did nothing is indistinguishable from one that worked.
+      const maskRgba = new Uint8Array(mask.width * mask.height * 4);
+      for (let i = 0; i < feathered.length; i += 1) maskRgba[i * 4 + 3] = feathered[i]!;
+      const maskImage = await sharp(Buffer.from(maskRgba), {
+        raw: { width: mask.width, height: mask.height, channels: 4 },
       })
         .resize(sourceWidth, sourceHeight, { fit: 'fill', kernel: 'cubic' })
+        .png()
         .toBuffer();
 
       subject = sharp(
         await sharp(await base.toBuffer(), { failOn: 'none' })
-          .removeAlpha()
-          .joinChannel(fullAlpha, {
-            raw: { width: sourceWidth, height: sourceHeight, channels: 1 },
-          })
+          .ensureAlpha()
+          .composite([{ input: maskImage, blend: 'dest-in' }])
           .png()
           .toBuffer(),
       ).trim({ threshold: 1 });
@@ -254,6 +311,7 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
       maskConfidence,
       detail,
       backgroundRemoved,
+      overlayRemoved,
       upscaled,
     },
   };

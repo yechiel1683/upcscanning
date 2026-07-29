@@ -251,6 +251,64 @@ describe('renderProductImage', () => {
     expect(centre.a).toBeGreaterThan(200);
   });
 
+  it('actually erases the backdrop rather than reporting that it did', async () => {
+    // A coloured backdrop with a gradient across it, and both details are
+    // load-bearing. Coloured, because every other fixture here is a subject on
+    // white composited back onto white, where a cutout that quietly did nothing
+    // is pixel-identical to one that worked — which is how a broken alpha
+    // channel survived in this pipeline unnoticed. Graded, because `trim` will
+    // crop a perfectly uniform backdrop by itself, so a flat colour lets the
+    // fallback path clean up after the bug and the test passes anyway. Only a
+    // backdrop that trimming cannot remove proves the mask was applied.
+    const gradient = Buffer.alloc(800 * 800 * 3);
+    for (let y = 0; y < 800; y += 1) {
+      for (let x = 0; x < 800; x += 1) {
+        const index = (y * 800 + x) * 3;
+        gradient[index] = 20 + Math.round((y / 800) * 24);
+        gradient[index + 1] = 60 + Math.round((y / 800) * 20);
+        gradient[index + 2] = 200 + Math.round((x / 800) * 18);
+      }
+    }
+
+    const onBlue = await sharp(gradient, { raw: { width: 800, height: 800, channels: 3 } })
+      .composite([
+        {
+          input: {
+            create: {
+              width: 300,
+              height: 300,
+              channels: 3,
+              background: { r: 200, g: 30, b: 40 },
+            },
+          },
+          left: 250,
+          top: 250,
+        },
+      ])
+      .png()
+      .toBuffer();
+
+    const result = await renderProductImage({ buffer: onBlue, options });
+    expect(result.metrics.backgroundRemoved).toBe(true);
+
+    const { data, info } = await sharp(result.buffer)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let backdrop = 0;
+    const total = info.width * info.height;
+    for (let i = 0; i < total; i += 1) {
+      const base = i * info.channels;
+      // Anything in the backdrop's blue family, across the whole gradient.
+      const dr = data[base]! - 32;
+      const dg = data[base + 1]! - 70;
+      const db = data[base + 2]! - 209;
+      if (dr * dr + dg * dg + db * db <= 3 * 55 * 55) backdrop += 1;
+    }
+    expect(backdrop / total).toBeLessThan(0.001);
+  });
+
   it('falls back to PNG when transparency is requested with a JPEG format', async () => {
     const conflicting: RenderOptions = { ...options, background: 'transparent', format: 'jpeg' };
     const result = await renderProductImage({ buffer: await studioPhoto(), options: conflicting });

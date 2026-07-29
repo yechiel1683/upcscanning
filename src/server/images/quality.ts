@@ -149,6 +149,8 @@ export interface QualityInput {
   /** Mean absolute deviation of luminance; a proxy for detail/sharpness. */
   detail?: number;
   hasAlpha?: boolean;
+  /** Share of the subject that is composited marketing artwork, 0-1. */
+  overlayShare?: number;
 }
 
 export interface QualityAssessment {
@@ -228,6 +230,17 @@ export function scoreQuality(input: QualityInput): QualityAssessment {
   }
 
   if (input.hasAlpha) notes.push('already has transparency');
+
+  // Composited marketing artwork. The panel is stripped before rendering, so
+  // such an image is still usable — but a listing image that is a third banner
+  // is a worse starting point than a plain pack shot of the same product, and
+  // this is what makes the plain one win when both are available. Weighted to
+  // matter without overriding resolution: a banner-laden 2000px photo should
+  // still beat a clean 400px thumbnail.
+  if (input.overlayShare !== undefined && input.overlayShare > 0.05) {
+    score -= Math.min(0.2, input.overlayShare * 0.35);
+    notes.push('carries promotional artwork');
+  }
 
   return { score: Math.max(0, Math.min(1, score)), rejected: false, notes };
 }

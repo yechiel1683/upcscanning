@@ -272,9 +272,11 @@ while `Duracell Coppertop AA Batteries 8 Pack` is a very good one.
    match, title overlap, accessory keywords, URL shape, reported dimensions)
    filter candidates before any bandwidth is spent.
 5. **Score after downloading.** Resolution, aspect ratio, backdrop uniformity,
-   subject framing, and detail decide whether the photo is usable.
-6. **Render.** Orient, segment, trim to the subject, resize into a padded frame,
-   composite onto the backdrop, add a contact shadow, encode.
+   subject framing, detail, and composited marketing artwork decide whether the
+   photo is usable, and which of several usable ones is best.
+6. **Render.** Orient, segment, drop promotional overlays, trim to the subject,
+   resize into a padded frame, composite onto the backdrop, add a contact
+   shadow, encode.
 7. **Fall back.** No usable candidate and generation enabled → Workflow B.
 8. **Persist.** The image, the discovered product details, its provenance, and
    the full candidate audit trail — including every rejection and its reason —
@@ -291,6 +293,29 @@ conservative: when the border is visually busy or the fill would consume most of
 the frame, it reports low confidence and the pipeline **keeps the original
 background** rather than punching a hole through the product. `remove.bg` is
 available for the hard cases (soft edges, hair, glass, lifestyle shots).
+
+### Promotional overlays
+
+Image search returns retail *listing* images as readily as product photographs,
+and sellers composite marketing furniture onto those: a coloured banner reading
+"All Day Fresh", a "2-PACK" flash, a price starburst. A catalog built from them
+carries somebody else's advertising in every row.
+
+That furniture is drawn rather than photographed, and the pipeline separates the
+two by asking how much of a region is made of *repeated exact colours*. Drawn
+artwork is assembled from a few flat fills, so a handful of values each account
+for a large share of it. A photographed surface is shaded, so no single value
+repeats — the most common colour covers about 5% of a photographed bottle
+against roughly 45% of a banner fill.
+
+Detected panels are erased and the image segmented again before the cutout,
+which is what lets it proceed at all: segmentation confidence is judged partly
+on how uniform the frame border is, and a banner running to the edge is exactly
+what ruins it. The result feeds ranking too, so a plain pack shot beats a
+composited one when both exist. If stripping the panels would leave too little
+behind — a product that really is a flat drawn rectangle — the analysis stands
+down and the image is used whole. Losing the product is worse than keeping a
+banner.
 
 ### Scaling, quotas, and cost
 

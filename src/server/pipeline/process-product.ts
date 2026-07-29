@@ -429,6 +429,7 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
         foregroundRatio: analysis.foregroundRatio,
         detail: analysis.detail,
         hasAlpha: analysis.hasAlpha,
+        overlayShare: analysis.overlayShare,
       });
 
       if (quality.rejected || quality.score < MINIMUM_QUALITY_THRESHOLD) {

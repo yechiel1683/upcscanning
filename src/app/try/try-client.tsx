@@ -197,6 +197,14 @@ export function TryClient() {
               </code>{' '}
               on the server to turn on web image search and generated images.
             </p>
+            {/* Setting the variable and still seeing this banner is the loop the
+                setup page exists to break, so it has to be reachable from here. */}
+            <a
+              href="/setup"
+              className="mt-3 inline-flex text-sm font-medium text-fg underline underline-offset-4 hover:opacity-80"
+            >
+              Already set it? Check why it isn’t arriving →
+            </a>
           </div>
         </Card>
       ) : null}

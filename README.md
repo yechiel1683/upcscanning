@@ -159,11 +159,14 @@ and restart policy. Three things to set up:
 1. **Add a Postgres service**, then set this service's `DATABASE_URL` to
    reference it (`${{Postgres.DATABASE_URL}}`). Migrations run automatically on
    every boot — see `scripts/release.ts` — so there is no manual release step.
-   If the database is unreachable the container refuses to start rather than
-   serving errors on every request.
+   If the database is unreachable the container still starts, printing a banner
+   in the logs: guest mode needs no database, and a site that boots and explains
+   itself beats one that dies before it can.
 
-2. **Set `OPENAI_API_KEY`.** That one key covers identification, web image
-   search, and fallback generation.
+2. **Set `OPENAI_API_KEY`** on *this* service, not on the Postgres service. That
+   one key covers identification, web image search, and fallback generation.
+   Railway redeploys on save; if it shows the change as staged, it is not live
+   until you click **Deploy**.
 
 3. **Give the images somewhere durable to live.** By default they are written
    to the container filesystem, which is wiped on every redeploy — so a catalog
@@ -174,6 +177,17 @@ and restart policy. Three things to set up:
 The app prints a preflight report at boot listing anything misconfigured,
 including this one, so a broken deployment says so in the logs instead of
 failing quietly at request time.
+
+**If it still says the key is missing after you set it, open `/setup`.** Logs
+are not much help here, because the four ways a key fails to arrive all look
+identical from inside the process. That page separates them: it reports whether
+the value reached the server at all, names any variable that looks like a
+misspelling of one the app reads (`OPENAI_KEY`, a trailing space in the name),
+flags a value that arrived wrapped in the quotes it was copied with, and — with
+one button — asks OpenAI whether the key authenticates and whether the account
+behind it has credit. API billing is separate from a ChatGPT subscription, and
+an unfunded account fails in a way that looks exactly like a bad key. No value
+is ever displayed, only whether it arrived.
 
 For real throughput, add a Redis service, set `QUEUE_DRIVER=redis` and
 `REDIS_URL`, and run a second Railway service from the same repo with the start

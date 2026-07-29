@@ -87,6 +87,16 @@ const schema = z.object({
 
 export type Env = z.infer<typeof schema>;
 
+/**
+ * Every variable name this application reads.
+ *
+ * Exported so the setup diagnostics can spot a variable that was *meant* to be
+ * one of these and isn't — `OPENAI_KEY`, `DATABSE_URL`. A typo in the name is
+ * invisible from inside the process (the value simply isn't there), which makes
+ * it the single hardest configuration mistake to find by looking.
+ */
+export const ENV_KEYS: readonly string[] = Object.freeze(Object.keys(schema.shape));
+
 let cached: Env | null = null;
 
 export function env(): Env {

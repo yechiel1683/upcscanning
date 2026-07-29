@@ -34,7 +34,12 @@ const schema = z.object({
 
   QUEUE_DRIVER: z.enum(['inline', 'redis']).default('inline'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
-  WORKER_CONCURRENCY: int(8),
+  // Deliberately low. Each in-flight product decodes an image outside the V8
+  // heap, so the container's memory ceiling — not the CPU — is what this
+  // setting really governs, and exceeding it is not a slowdown but a kill.
+  // Eight was chosen for throughput on a workstation and is the wrong default
+  // for a 512 MB container. Raise it once the instance has memory to spare.
+  WORKER_CONCURRENCY: int(3),
 
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   STORAGE_LOCAL_DIR: z.string().default('./storage'),
@@ -78,6 +83,17 @@ const schema = z.object({
   LOOKUP_CACHE_ENABLED: bool(true),
   LOOKUP_CACHE_TTL_DAYS: int(90),
   LOOKUP_CACHE_MISS_TTL_DAYS: int(7),
+
+  /**
+   * JPEG encoder. "fast" is libjpeg-turbo; "compact" is mozjpeg.
+   *
+   * Measured on a rendered 1600x1600 catalog image: mozjpeg produces 46.6 KB in
+   * 499 ms, libjpeg-turbo 62.8 KB in 80 ms. Sixteen kilobytes is nothing next to
+   * four hundred milliseconds on every single image, so the default favours the
+   * person waiting for their barcode. Set "compact" when a large archive is
+   * worth the wall time.
+   */
+  JPEG_COMPRESSION: z.enum(['fast', 'compact']).default('fast'),
 
   MAX_UPLOAD_BYTES: int(50 * 1024 * 1024),
   MAX_PRODUCTS_PER_BATCH: int(5000),

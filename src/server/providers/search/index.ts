@@ -88,38 +88,74 @@ function runProvider(provider: SearchProvider, context: SearchContext) {
  * Unlike the web tier this does not stop at the first hit: a second database
  * often fills in a model number or category the first one lacked, and the
  * lookups are cheap.
+ *
+ * They also all run at once. Every one of them is a request to a different host
+ * keyed on the same GTIN, so none can inform another and asking them in turn
+ * only adds up their latencies — which, for five databases, was most of the
+ * time a user spent waiting for a barcode they had just typed. Concurrently the
+ * tier costs one round trip instead of five.
+ *
+ * The results are then merged in the providers' declared order rather than in
+ * whatever order the network returned them, so the same barcode resolves to the
+ * same product every time.
  */
 export async function lookupBarcode(context: SearchContext): Promise<TierResult> {
+  return lookupBarcodeWith(
+    availableProviders('barcode').filter((provider) => provider.supports(context)),
+    context,
+  );
+}
+
+/** The tier itself, over an explicit provider list, so the fan-out is testable. */
+export async function lookupBarcodeWith(
+  usable: SearchProvider[],
+  context: SearchContext,
+): Promise<TierResult> {
   const candidates: SearchCandidate[] = [];
   const errors: Array<{ provider: string; message: string }> = [];
   const facts: Array<ProductFacts | undefined> = [];
   const providers: string[] = [];
   const seen = new Set<string>();
 
-  for (const provider of availableProviders('barcode')) {
-    if (!provider.supports(context)) continue;
-    // Once several databases agree and we have plenty of pictures, stop.
-    if (candidates.length >= context.limit && facts.filter(Boolean).length >= 2) break;
-
-    try {
-      const result = await runProvider(provider, { ...context, limit: context.limit });
-      facts.push(result.facts);
-      if (result.facts || result.candidates.length > 0) providers.push(provider.name);
-      for (const candidate of result.candidates) {
-        const key = candidate.sourceUrl.split('?')[0] ?? candidate.sourceUrl;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        candidates.push(candidate);
+  const settled = await Promise.all(
+    usable.map(async (provider) => {
+      try {
+        return {
+          provider,
+          result: await runProvider(provider, { ...context, limit: context.limit }),
+          error: null,
+        };
+      } catch (error) {
+        return { provider, result: null, error };
       }
-    } catch (error) {
+    }),
+  );
+
+  for (const { provider, result, error } of settled) {
+    if (error || !result) {
       errors.push({
         provider: provider.name,
         message: error instanceof Error ? error.message : String(error),
       });
+      continue;
+    }
+
+    facts.push(result.facts);
+    if (result.facts || result.candidates.length > 0) providers.push(provider.name);
+    for (const candidate of result.candidates) {
+      const key = candidate.sourceUrl.split('?')[0] ?? candidate.sourceUrl;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(candidate);
     }
   }
 
-  return { candidates, facts: mergeFacts(facts), errors, providers };
+  return {
+    candidates: candidates.slice(0, Math.max(context.limit, 1)),
+    facts: mergeFacts(facts),
+    errors,
+    providers,
+  };
 }
 
 /**

@@ -1,6 +1,8 @@
 import sharp from 'sharp';
 
+import { env } from '@/lib/env';
 import type { BackgroundStyle, OutputFormat, RenderOptions } from '@/lib/types';
+import { decodeOptions } from './limits';
 import {
   analyseBorder,
   buildForegroundMask,
@@ -78,7 +80,7 @@ export async function analyseImage(buffer: Buffer): Promise<{
   detail: number;
   overlayShare: number;
 }> {
-  const image = sharp(buffer, { failOn: 'none' }).rotate();
+  const image = sharp(buffer, decodeOptions()).rotate();
   const metadata = await image.metadata();
   const width = metadata.width ?? 0;
   const height = metadata.height ?? 0;
@@ -107,8 +109,7 @@ export async function analyseImage(buffer: Buffer): Promise<{
 export async function renderProductImage(input: RenderInput): Promise<RenderResult> {
   const { options } = input;
 
-  const base = sharp(input.buffer, { failOn: 'none' }).rotate();
-  const metadata = await base.metadata();
+  const metadata = await sharp(input.buffer, decodeOptions()).metadata();
   const sourceWidth = metadata.width ?? 0;
   const sourceHeight = metadata.height ?? 0;
   if (!sourceWidth || !sourceHeight) throw new Error('Image has no readable dimensions');
@@ -120,17 +121,21 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
 
   const alreadyTransparent = Boolean(metadata.hasAlpha) && (await hasMeaningfulAlpha(input.buffer));
 
-  let subject = sharp(await base.toBuffer(), { failOn: 'none' });
+  // --- segment ------------------------------------------------------------
+  // Done before touching the full-resolution image, because the mask is what
+  // says how large the source actually needs to be: a product filling half the
+  // frame needs twice the pixels of one filling all of it, and everything past
+  // that is thrown away by the final resize anyway.
+  let silhouetteMask: MaskResult | null = null;
+  let overlaysErased = false;
   let backgroundRemoved = false;
   let foregroundRatio: number | undefined;
   let maskConfidence: number | undefined;
   let overlayRemoved = false;
-  let silhouette: MaskResult | null = null;
 
   if (alreadyTransparent) {
     // The source is already a cutout; trimming its alpha is enough.
     backgroundRemoved = true;
-    subject = subject.trim({ threshold: 1 });
   } else if (options.removeBackground || options.background === 'transparent') {
     const raw = buildForegroundMask(smallData, smallInfo.width, smallInfo.height, {
       channels: smallInfo.channels,
@@ -151,7 +156,6 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
     );
 
     let mask = raw;
-    let overlaysErased = false;
     if (overlays.productMask) {
       const cleaned = eraseOverlays(
         smallData,
@@ -170,64 +174,9 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
     maskConfidence = mask.confidence;
 
     if (mask.confidence >= CUTOUT_CONFIDENCE_THRESHOLD && mask.bounds) {
-      // Only claim the furniture is gone on the path that actually cuts it out.
-      // The trim fallback below leaves the source pixels untouched.
-      overlayRemoved = overlaysErased;
-      const feathered = featherMask(mask.mask, mask.width, mask.height, 1);
-
-      // Carry the mask as the *alpha* of an RGBA image and erase with `dest-in`.
-      //
-      // The obvious route — resize the mask to a one-channel buffer and
-      // `joinChannel` it onto the source — does not work, and fails silently,
-      // which is worse. Given one-channel raw input and no explicit output
-      // format sharp promotes greyscale to three-channel sRGB, so the buffer is
-      // three times the expected length; `joinChannel` then either misreads it
-      // or drops the band entirely, and the result is a fully opaque image. No
-      // error is raised anywhere. It went unnoticed because every fixture was a
-      // dark subject on white composited back onto white, where a cutout that
-      // did nothing is indistinguishable from one that worked.
-      const maskRgba = new Uint8Array(mask.width * mask.height * 4);
-      for (let i = 0; i < feathered.length; i += 1) maskRgba[i * 4 + 3] = feathered[i]!;
-      const maskImage = await sharp(Buffer.from(maskRgba), {
-        raw: { width: mask.width, height: mask.height, channels: 4 },
-      })
-        .resize(sourceWidth, sourceHeight, { fit: 'fill', kernel: 'cubic' })
-        .png()
-        .toBuffer();
-
-      subject = sharp(
-        await sharp(await base.toBuffer(), { failOn: 'none' })
-          .ensureAlpha()
-          .composite([{ input: maskImage, blend: 'dest-in' }])
-          .png()
-          .toBuffer(),
-      ).trim({ threshold: 1 });
+      silhouetteMask = mask;
       backgroundRemoved = true;
-      silhouette = mask;
-    } else {
-      // Not confident enough to cut out. If the backdrop is at least uniform we
-      // can still trim the flat margins so framing stays consistent.
-      if (border.variance < 400) {
-        subject = subject.trim({ threshold: 12 });
-      }
     }
-  } else if (border.variance < 400) {
-    subject = subject.trim({ threshold: 12 });
-  }
-
-  // `trim` can fail on an image that is entirely one colour; fall back to the
-  // untrimmed original rather than losing the product.
-  let subjectBuffer: Buffer;
-  try {
-    subjectBuffer = await subject.png().toBuffer();
-  } catch {
-    subjectBuffer = await sharp(input.buffer, { failOn: 'none' }).rotate().png().toBuffer();
-    backgroundRemoved = false;
-  }
-
-  const trimmed = await sharp(subjectBuffer).metadata();
-  if (!trimmed.width || !trimmed.height) {
-    subjectBuffer = await sharp(input.buffer, { failOn: 'none' }).rotate().png().toBuffer();
   }
 
   // --- fit into the padded frame -----------------------------------------
@@ -235,15 +184,108 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   const innerWidth = Math.max(1, Math.round(options.width * (1 - padding * 2)));
   const innerHeight = Math.max(1, Math.round(options.height * (1 - padding * 2)));
 
-  const resized = await sharp(subjectBuffer)
-    .resize(innerWidth, innerHeight, {
-      fit: 'inside',
-      // Never blow a small source up beyond its native size — an upscaled
-      // 300px thumbnail looks worse than a small, sharp product.
-      withoutEnlargement: false,
-      kernel: 'lanczos3',
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
+  // --- decode once, at the size the output actually needs ------------------
+  const workEdge = chooseWorkingEdge(Math.max(innerWidth, innerHeight), silhouetteMask);
+  const work = await sharp(input.buffer, decodeOptions())
+    .rotate()
+    .resize(workEdge, workEdge, { fit: 'inside', withoutEnlargement: true, kernel: 'lanczos3' })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const workWidth = work.info.width;
+  const workHeight = work.info.height;
+  const fromWork = () =>
+    sharp(work.data, { raw: { width: workWidth, height: workHeight, channels: 4 } });
+
+  let subject = fromWork();
+  let subjectWidth = workWidth;
+
+  if (alreadyTransparent) {
+    subject = subject.trim({ threshold: 1 });
+  } else if (silhouetteMask?.bounds) {
+    const mask = silhouetteMask;
+    overlayRemoved = overlaysErased;
+
+    // Carry the mask as the *alpha* of an RGBA image and erase with `dest-in`.
+    //
+    // The obvious route — resize the mask to a one-channel buffer and
+    // `joinChannel` it onto the source — does not work, and fails silently,
+    // which is worse. Given one-channel raw input and no explicit output format
+    // sharp promotes greyscale to three-channel sRGB, so the buffer is three
+    // times the expected length; `joinChannel` then either misreads it or drops
+    // the band entirely, and the result is a fully opaque image. No error is
+    // raised anywhere.
+    const feathered = featherMask(mask.mask, mask.width, mask.height, 1);
+    const maskRgba = new Uint8Array(mask.width * mask.height * 4);
+    for (let i = 0; i < feathered.length; i += 1) maskRgba[i * 4 + 3] = feathered[i]!;
+    // Crop to the bounds the segmentation already measured rather than encoding
+    // the whole frame and asking sharp to `trim` it back down. Trimming a
+    // full-resolution PNG was, on its own, the single most expensive step in
+    // this pipeline — 2.5s of a 5.9s render on a 4000px source — and it was
+    // rediscovering a rectangle we had known all along.
+    //
+    // Both sides are cropped before compositing, and the order is not a matter
+    // of taste: sharp runs a fixed pipeline rather than the sequence you write,
+    // so a `.composite()` before an `.extract()` still composites last, against
+    // an image that has already shrunk. The mask no longer lines up and the
+    // whole operation throws.
+    const crop = scaleBounds(mask.bounds!, mask.width, mask.height, workWidth, workHeight);
+    const maskImage = await sharp(Buffer.from(maskRgba), {
+      raw: { width: mask.width, height: mask.height, channels: 4 },
     })
+      .resize(workWidth, workHeight, { fit: 'fill', kernel: 'cubic' })
+      .extract(crop)
+      .png()
+      .toBuffer();
+
+    subject = fromWork()
+      .extract(crop)
+      .composite([{ input: maskImage, blend: 'dest-in' }]);
+    subjectWidth = crop.width;
+  } else if (border.variance < 400) {
+    // Not confident enough to cut out. If the backdrop is at least uniform we
+    // can still trim the flat margins so framing stays consistent.
+    subject = subject.trim({ threshold: 12 });
+  }
+
+  const fit = {
+    fit: 'inside' as const,
+    // Never blow a small source up beyond its native size — an upscaled
+    // 300px thumbnail looks worse than a small, sharp product.
+    withoutEnlargement: false,
+    kernel: 'lanczos3' as const,
+    background: { r: 0, g: 0, b: 0, alpha: 0 },
+  };
+
+  // Two stages, handed off as raw pixels rather than an encoded image. The cut
+  // out subject used to be written to PNG purely so it could be decoded again
+  // for the resize, which cost more than every other step here combined and
+  // which nothing in between ever looked at.
+  //
+  // They stay two stages, though, because sharp queues operations into a fixed
+  // pipeline instead of running them in the order written: fold the resize into
+  // the same chain as the `extract` and the crop is applied *after* the resize,
+  // so the output is a crop-sized thumbnail of a full-frame enlargement.
+  // Materialising between them is what pins the order down.
+  //
+  // `trim` and `extract` can both fail — on an image that is entirely one
+  // colour, or on a degenerate crop — so the fallback keeps the untouched
+  // working image rather than losing the product.
+  let cut: { data: Buffer; info: { width: number; height: number; channels: 1 | 2 | 3 | 4 } };
+  try {
+    cut = await subject.raw().toBuffer({ resolveWithObject: true });
+  } catch {
+    cut = await fromWork().raw().toBuffer({ resolveWithObject: true });
+    backgroundRemoved = false;
+    overlayRemoved = false;
+    subjectWidth = workWidth;
+  }
+
+  const resized = await sharp(cut.data, {
+    raw: { width: cut.info.width, height: cut.info.height, channels: cut.info.channels },
+  })
+    .resize(innerWidth, innerHeight, fit)
+    .raw()
     .toBuffer({ resolveWithObject: true });
 
   const productWidth = resized.info.width;
@@ -251,7 +293,8 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   const left = Math.round((options.width - productWidth) / 2);
   const top = Math.round((options.height - productHeight) / 2);
 
-  const upscaled = productWidth > (trimmed.width ?? sourceWidth);
+  const silhouette = silhouetteMask;
+  const upscaled = productWidth > Math.min(subjectWidth, sourceWidth);
 
   // --- compose ------------------------------------------------------------
   const layers: sharp.OverlayOptions[] = [];
@@ -267,7 +310,16 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
     }
   }
 
-  layers.push({ input: resized.data, left, top });
+  layers.push({
+    input: resized.data,
+    raw: {
+      width: resized.info.width,
+      height: resized.info.height,
+      channels: resized.info.channels,
+    },
+    left,
+    top,
+  });
 
   if (input.aiBadge) {
     layers.push({
@@ -292,7 +344,14 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   } else {
     output = canvas
       .flatten({ background: backgroundColour(options.background) })
-      .jpeg({ quality: options.quality, mozjpeg: true, chromaSubsampling: '4:4:4' });
+      .jpeg({
+        quality: options.quality,
+        mozjpeg: env().JPEG_COMPRESSION === 'compact',
+        // 4:4:4 regardless of encoder: chroma subsampling is what smears the
+        // coloured edge of a product against a white backdrop, and that edge is
+        // the whole subject here.
+        chromaSubsampling: '4:4:4',
+      });
   }
 
   const finalBuffer = await output.toBuffer();
@@ -321,11 +380,57 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * How large the working copy needs to be.
+ *
+ * The output is a fixed size, so past a point extra source pixels are decoded,
+ * masked, cropped and then thrown away by the final resize. How far past that
+ * point depends on the subject: one filling a quarter of the frame needs four
+ * times the pixels of one filling all of it, because only its own area survives
+ * the crop.
+ *
+ * The segmentation bounds say exactly what that fraction is, so this asks for
+ * the smallest source that still lands the *subject* at full output resolution,
+ * with a little headroom. The ceiling is twice the output edge: beyond that the
+ * subject is a stamp in the corner of a huge photo, and a slight upscale costs
+ * far less than decoding a 60-megapixel frame to keep it.
+ */
+export function chooseWorkingEdge(innerEdge: number, mask: MaskResult | null): number {
+  const ceiling = innerEdge * 2;
+  if (!mask?.bounds) return ceiling;
+
+  const fraction = Math.max(
+    mask.bounds.width / mask.width,
+    mask.bounds.height / mask.height,
+    0.05,
+  );
+  const needed = Math.ceil((innerEdge / fraction) * 1.05);
+  return Math.max(innerEdge, Math.min(needed, ceiling));
+}
+
+/** Map a rectangle measured on the analysis image onto the working image. */
+function scaleBounds(
+  bounds: { left: number; top: number; width: number; height: number },
+  fromWidth: number,
+  fromHeight: number,
+  toWidth: number,
+  toHeight: number,
+): { left: number; top: number; width: number; height: number } {
+  const scaleX = toWidth / fromWidth;
+  const scaleY = toHeight / fromHeight;
+  const left = Math.max(0, Math.floor(bounds.left * scaleX));
+  const top = Math.max(0, Math.floor(bounds.top * scaleY));
+  // Round outward so a feathered edge is never clipped, then clamp to the frame.
+  const width = Math.min(toWidth - left, Math.max(1, Math.ceil(bounds.width * scaleX) + 1));
+  const height = Math.min(toHeight - top, Math.max(1, Math.ceil(bounds.height * scaleY) + 1));
+  return { left, top, width, height };
+}
+
 async function downscaleToRaw(buffer: Buffer): Promise<{
   data: Buffer;
   info: { width: number; height: number; channels: number };
 }> {
-  const result = await sharp(buffer, { failOn: 'none' })
+  const result = await sharp(buffer, decodeOptions())
     .rotate()
     .resize(ANALYSIS_MAX_EDGE, ANALYSIS_MAX_EDGE, { fit: 'inside', withoutEnlargement: true })
     // Flatten onto white so a transparent source does not read as black pixels.
@@ -383,7 +488,7 @@ function measureDetail(
  */
 async function hasMeaningfulAlpha(buffer: Buffer): Promise<boolean> {
   try {
-    const { data, info } = await sharp(buffer, { failOn: 'none' })
+    const { data, info } = await sharp(buffer, decodeOptions())
       .rotate()
       .resize(160, 160, { fit: 'inside' })
       .ensureAlpha()

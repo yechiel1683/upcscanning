@@ -317,6 +317,48 @@ behind — a product that really is a flat drawn rectangle — the analysis stan
 down and the image is used whole. Losing the product is worse than keeping a
 banner.
 
+### Speed, and memory
+
+How long a single barcode takes is the whole experience of using this, so the
+work is arranged around never doing anything twice:
+
+- **The product databases are asked all at once.** Each is keyed on the same
+  GTIN and none can inform another, so asking them in turn only added up their
+  latencies. Five databases now cost one round trip.
+- **The language model is not consulted on a barcode that resolves.**
+  Identification exists to turn a vague row into a good *search query*; a GTIN
+  hit already has the product and its pictures, so the model is called only when
+  the barcode tier comes up short and the open web is next.
+- **Exactly one image is rendered per product.** Candidates are chosen from the
+  analysis pass, which is far cheaper than a render. Rendering each one and
+  keeping the best meant five full pipelines per product, four of them for an
+  image nobody would ever see.
+- **The source is decoded once, at the size the output needs.** The
+  segmentation bounds say how much of the frame is product, which is what
+  decides how many source pixels can possibly survive the crop.
+
+That last one is most of the difference. Rendering a 4000×4000 source took 5.9s,
+of which 4.6s was encoding full-resolution PNGs between steps and asking `trim`
+to rediscover a rectangle segmentation had already measured. It is now ~1.1s,
+and flat: a 900px source and a 4000px source cost the same, because both are
+doing the same amount of work on the same number of pixels.
+
+**Memory is the binding constraint, not CPU.** sharp works outside the V8 heap,
+so a container does not throw a heap error — it exceeds its allowance and is
+killed, which is what a host's "ran out of memory" notice reports. Measured
+peak RSS rendering 4000×4000 sources:
+
+| `WORKER_CONCURRENCY` | peak RSS | wall time |
+| --- | --- | --- |
+| 1 | 207 MB | 1.0s |
+| 3 (default) | 412 MB | 1.5s |
+| 8 | 578 MB | 3.5s |
+
+The default is 3 because a 512 MB container cannot survive 8 — and the previous
+default *was* 8, while each product rendered five images. Raise it when the
+instance has memory to spare; that is the single knob for throughput, along with
+running more worker processes.
+
 ### Scaling, quotas, and cost
 
 Products are queued individually, so a 5,000-row upload is 5,000 independent

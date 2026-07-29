@@ -167,14 +167,18 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   };
 
   // --- 2. Identify --------------------------------------------------------
-  const enrichment = input.cachedEnrichment ?? (await enrichProduct(toEnrichment(resolved)));
-  log.push(
-    `Identified "${enrichment.canonicalTitle}"` +
-      (enrichment.brand ? ` (brand: ${enrichment.brand}` : '') +
-      (enrichment.model ? `, model: ${enrichment.model}` : '') +
-      (enrichment.brand ? ')' : '') +
-      ` via ${enrichment.source}`,
-  );
+  //
+  // Deliberately not a model call yet. Identification exists to turn a vague row
+  // into a good *search query*, and a GTIN hit needs no query: the barcode
+  // databases keyed on the number and handed back both the product and its
+  // pictures. Paying a language model a second or two to describe a product we
+  // have already identified, in order to rank images we already hold, is the
+  // single largest avoidable delay between typing a barcode and seeing it.
+  //
+  // So the cheap local enrichment carries the barcode tier, and the model is
+  // consulted only if that tier comes up short and we have to go to the web.
+  let enrichment: ProductEnrichment =
+    input.cachedEnrichment ?? heuristicEnrichment(toEnrichment(resolved));
 
   const searchContext: SearchContext = {
     upc: resolved.upc,
@@ -191,7 +195,6 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     candidates: barcodeCandidates,
     searchContext,
     product: resolved,
-    options,
     evaluated,
     log,
     maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
@@ -204,6 +207,21 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   let searchedWeb = false;
   if (!goodEnough(best)) {
     searchedWeb = true;
+
+    // Now it is worth a model call: we are about to search the open web, where
+    // the query and the negative keywords are what stand between a product and
+    // its accessories.
+    if (!input.cachedEnrichment) {
+      enrichment = await enrichProduct(toEnrichment(resolved));
+      searchContext.enrichment = enrichment;
+    }
+    log.push(
+      `Identified "${enrichment.canonicalTitle}"` +
+        (enrichment.brand ? ` (brand: ${enrichment.brand}` : '') +
+        (enrichment.model ? `, model: ${enrichment.model}` : '') +
+        (enrichment.brand ? ')' : '') +
+        ` via ${enrichment.source}`,
+    );
     const web = await searchWeb(searchContext, { directImageUrl: product.imageUrl });
     for (const error of web.errors) {
       log.push(`Search provider ${error.provider} failed: ${error.message}`);
@@ -217,7 +235,6 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       candidates: web.candidates,
       searchContext,
       product: resolved,
-      options,
       evaluated,
       log,
       maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
@@ -228,22 +245,44 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   }
 
   if (best) {
-    const winner = evaluated.find((entry) => entry.candidate.sourceUrl === best!.candidate.sourceUrl);
-    if (winner) winner.selected = true;
+    // The one render in the whole of Workflow A.
+    try {
+      const prepared = await maybeHostedCutout(best.source, options, log);
+      const render = await renderProductImage({ buffer: prepared, options });
 
-    return {
-      status: 'succeeded',
-      kind: best.candidate.provider === 'spreadsheet' ? 'USER_PROVIDED' : 'REAL',
-      render: best.render,
-      enrichment,
-      facts,
-      provider: best.candidate.provider,
-      sourceUrl: best.candidate.sourceUrl,
-      matchScore: best.matchScore,
-      qualityScore: best.qualityScore,
-      candidates: evaluated,
-      log,
-    };
+      const winner = evaluated.find(
+        (entry) => entry.candidate.sourceUrl === best!.candidate.sourceUrl,
+      );
+      if (winner) winner.selected = true;
+
+      return {
+        status: 'succeeded',
+        kind: best.candidate.provider === 'spreadsheet' ? 'USER_PROVIDED' : 'REAL',
+        render,
+        enrichment,
+        facts,
+        provider: best.candidate.provider,
+        sourceUrl: best.candidate.sourceUrl,
+        matchScore: best.matchScore,
+        qualityScore: best.qualityScore,
+        candidates: evaluated,
+        log,
+      };
+    } catch (error) {
+      // Deferring the render moves its failures here, after the search has
+      // already committed. Falling through to generation is better than failing
+      // the product outright over one unreadable file.
+      const message = error instanceof Error ? error.message : String(error);
+      const entry = evaluated.find(
+        (candidate) => candidate.candidate.sourceUrl === best!.candidate.sourceUrl,
+      );
+      if (entry) {
+        entry.rejected = true;
+        entry.rejectedReason = `Could not be rendered: ${message}`;
+      }
+      log.push(`Rendering ${hostOf(best.candidate.sourceUrl)} failed: ${message}`);
+      best = null;
+    }
   }
 
   // --- 5. Workflow B: generate --------------------------------------------
@@ -354,14 +393,22 @@ interface Winner {
   candidate: SearchCandidate;
   matchScore: number;
   qualityScore: number;
-  render: RenderResult;
+  /**
+   * The downloaded original, not a rendered image.
+   *
+   * Rendering here would mean rendering every candidate that passes scoring and
+   * discarding all but one — five full pipelines per product, four of them for
+   * an image nobody will ever see. Scoring already decides the winner from the
+   * analysis pass, which is far cheaper, so the render waits until there is
+   * exactly one image left to render.
+   */
+  source: Buffer;
 }
 
 interface EvaluateArgs {
   candidates: SearchCandidate[];
   searchContext: SearchContext;
   product: ProcessInput['product'];
-  options: RenderOptions;
   evaluated: EvaluatedCandidate[];
   log: string[];
   maxDownloads: number;
@@ -373,7 +420,7 @@ interface EvaluateArgs {
  * including the incumbent, so a later tier only wins if it is genuinely better.
  */
 async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
-  const { candidates, searchContext, product, options, evaluated, log } = args;
+  const { candidates, searchContext, product, evaluated, log } = args;
   if (candidates.length === 0) return args.incumbent ?? null;
 
   const ranked = candidates
@@ -445,14 +492,11 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
         continue;
       }
 
-      const prepared = await maybeHostedCutout(source, options, log);
-      const render = await renderProductImage({ buffer: prepared, options });
-
       const combined = assessment.score * 0.65 + quality.score * 0.35;
       const bestCombined = best ? best.matchScore * 0.65 + best.qualityScore * 0.35 : -1;
 
       if (combined > bestCombined) {
-        best = { candidate, matchScore: assessment.score, qualityScore: quality.score, render };
+        best = { candidate, matchScore: assessment.score, qualityScore: quality.score, source };
       }
 
       evaluated.push({

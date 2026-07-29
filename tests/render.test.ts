@@ -309,6 +309,74 @@ describe('renderProductImage', () => {
     expect(backdrop / total).toBeLessThan(0.001);
   });
 
+  it('keeps a pale product on a pale backdrop instead of cutting it away', async () => {
+    // The failure this guards is not a bad cutout, it is a deleted product: a
+    // white bottle on a white sweep is absorbed by any tolerance worth using,
+    // so the mask comes back describing the bottle's *label* — compact,
+    // plausible, and scoring well on every signal the mask can see. Rendered,
+    // the customer gets two floating rectangles where their product was.
+    const size = 600;
+    const pixels = Buffer.alloc(size * size * 3, 252);
+    const put = (x: number, y: number, r: number, g: number, b: number) => {
+      const index = (y * size + x) * 3;
+      pixels[index] = r;
+      pixels[index + 1] = g;
+      pixels[index + 2] = b;
+    };
+
+    // Near-white bottle: six levels off the backdrop, which is realistic and is
+    // exactly what defeats colour segmentation.
+    for (let y = 90; y < 520; y += 1) {
+      for (let x = 210; x < 390; x += 1) {
+        const v = 246 - Math.round(((y - 90) / 430) * 3);
+        put(x, y, v, v, v + 1);
+      }
+    }
+    // A dark printed label — the only high-contrast part of the product.
+    for (let y = 250; y < 330; y += 1) for (let x = 225; x < 375; x += 1) put(x, y, 28, 52, 120);
+
+    const source = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } })
+      .png()
+      .toBuffer();
+
+    const result = await renderProductImage({ buffer: source, options });
+
+    // The cutout must decline rather than produce a confident wrong answer.
+    expect(result.metrics.backgroundRemoved).toBe(false);
+
+    // And the product must still be there. The bottle is a fifth of the frame
+    // wide; if only the label survived, the subject would be far narrower than
+    // it is tall. Measure the widest run of non-backdrop pixels.
+    const { data, info } = await sharp(result.buffer)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let minX = info.width;
+    let maxX = -1;
+    let minY = info.height;
+    let maxY = -1;
+    for (let y = 0; y < info.height; y += 1) {
+      for (let x = 0; x < info.width; x += 1) {
+        const base = (y * info.width + x) * info.channels;
+        // Anything meaningfully off the white canvas counts as product.
+        if (data[base]! < 250 || data[base + 1]! < 250 || data[base + 2]! < 250) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const subjectWidth = maxX - minX + 1;
+    const subjectHeight = maxY - minY + 1;
+    // The bottle is 180x430 in the source, so roughly 0.42 wide-to-tall. The
+    // label alone is 150x80 — nearly twice as wide as it is tall. Anything
+    // above 1 means the bottle was lost.
+    expect(subjectWidth / subjectHeight).toBeLessThan(0.75);
+  });
+
   it('falls back to PNG when transparency is requested with a JPEG format', async () => {
     const conflicting: RenderOptions = { ...options, background: 'transparent', format: 'jpeg' };
     const result = await renderProductImage({ buffer: await studioPhoto(), options: conflicting });

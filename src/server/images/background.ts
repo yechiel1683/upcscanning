@@ -24,12 +24,33 @@ export interface MaskResult {
   foregroundRatio: number;
   /** Tight bounding box of the foreground, or null when nothing was found. */
   bounds: { left: number; top: number; width: number; height: number } | null;
+  /** Extent of everything in the frame carrying an edge. See measureInkBounds. */
+  inkBounds: { left: number; top: number; width: number; height: number } | null;
+  /**
+   * The fill absorbed part of the subject.
+   *
+   * A verdict about the photograph, kept separate from `confidence` because it
+   * has to survive being re-segmented: erasing a promotional panel legitimately
+   * shrinks the mask, so the second pass cannot re-derive this for itself and
+   * inherits the first pass's answer instead.
+   */
+  fillLeaked: boolean;
 }
 
 export interface MaskOptions {
   /** Max per-channel distance from the seed colour, 0-255. */
   tolerance?: number;
   channels: number;
+  /**
+   * Ink bounds measured on the *original* frame.
+   *
+   * Supplied when segmenting a doctored copy — the overlay pass paints its
+   * panels out with an estimated backdrop colour, which leaves a rectangle of
+   * edges where the panel was. Measuring on that copy would report structure
+   * the photograph does not have, and the leak check would read a correct
+   * cutout as a failed one.
+   */
+  inkBounds?: { left: number; top: number; width: number; height: number } | null;
 }
 
 /** Squared Euclidean distance in RGB, avoiding a sqrt in the inner loop. */
@@ -102,6 +123,77 @@ export function analyseBorder(
   variance /= count;
 
   return { r: Math.round(meanR), g: Math.round(meanG), b: Math.round(meanB), variance };
+}
+
+/**
+ * The extent of everything in the frame that has an edge in it.
+ *
+ * This exists to catch the one failure a colour-based fill cannot catch by
+ * itself: a white product on a white backdrop. The fill is not wrong to absorb
+ * it — the pixels really are the backdrop's colour, to within any tolerance
+ * worth using — so the mask comes back describing a bottle's *label* and
+ * nothing else, and every confidence signal computed from that mask looks
+ * healthy, because a label is a perfectly plausible small product.
+ *
+ * Structure is what survives when colour does not. A white bottle still has a
+ * silhouette, a shoulder, a shadow: places where neighbouring pixels differ,
+ * however slightly. Measuring where that structure reaches gives an independent
+ * answer to "how big is the thing in this picture", which can then be compared
+ * with what the fill decided to keep.
+ *
+ * A row or column counts only when several of its pixels carry an edge, so
+ * sensor noise and a stray compression artefact cannot stretch the result.
+ */
+export function measureInkBounds(
+  data: Uint8Array | Buffer,
+  width: number,
+  height: number,
+  channels: number,
+  minEdge = 5,
+): { left: number; top: number; width: number; height: number } | null {
+  if (width < 2 || height < 2) return null;
+
+  const rowCounts = new Int32Array(height);
+  const columnCounts = new Int32Array(width);
+
+  const differs = (a: number, b: number): boolean => {
+    const dr = Math.abs((data[a] ?? 0) - (data[b] ?? 0));
+    const dg = Math.abs((data[a + 1] ?? 0) - (data[b + 1] ?? 0));
+    const db = Math.abs((data[a + 2] ?? 0) - (data[b + 2] ?? 0));
+    return Math.max(dr, dg, db) >= minEdge;
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const pixel = y * width + x;
+      const base = pixel * channels;
+      const right = x + 1 < width && differs(base, (pixel + 1) * channels);
+      const down = y + 1 < height && differs(base, (pixel + width) * channels);
+      if (right || down) {
+        rowCounts[y] = (rowCounts[y] ?? 0) + 1;
+        columnCounts[x] = (columnCounts[x] ?? 0) + 1;
+      }
+    }
+  }
+
+  const MIN_PER_LINE = 2;
+  let top = -1;
+  let bottom = -1;
+  for (let y = 0; y < height; y += 1) {
+    if (rowCounts[y]! < MIN_PER_LINE) continue;
+    if (top < 0) top = y;
+    bottom = y;
+  }
+  let left = -1;
+  let right = -1;
+  for (let x = 0; x < width; x += 1) {
+    if (columnCounts[x]! < MIN_PER_LINE) continue;
+    if (left < 0) left = x;
+    right = x;
+  }
+
+  if (top < 0 || left < 0) return null;
+  return { left, top, width: right - left + 1, height: bottom - top + 1 };
 }
 
 /**
@@ -215,15 +307,55 @@ export function buildForegroundMask(
       ? { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 }
       : null;
 
+  const inkBounds =
+    options.inkBounds !== undefined
+      ? options.inkBounds
+      : measureInkBounds(data, width, height, channels);
+
+  const fillLeaked = detectLeak(bounds, inkBounds);
+
   return {
     mask,
     width,
     height,
-    confidence: scoreMask({ foregroundRatio, borderIsUniform, variance: border.variance, bounds, width, height }),
+    confidence: scoreMask({
+      foregroundRatio,
+      borderIsUniform,
+      variance: border.variance,
+      bounds,
+      fillLeaked,
+      width,
+      height,
+    }),
     backgroundColor: seedColour,
     foregroundRatio,
     bounds,
+    inkBounds,
+    fillLeaked,
   };
+}
+
+/**
+ * Did the fill eat the product?
+ *
+ * A pale product on a pale backdrop is absorbed by any tolerance worth using,
+ * and what comes back is a mask of its label — compact, plausible, and scoring
+ * well on every other signal available. The giveaway is that the picture still
+ * has structure well outside it: a silhouette, a shoulder, a shadow.
+ *
+ * When the fill kept only a fraction of what the frame visibly contains, the
+ * honest answer is that this image cannot be segmented by colour and the caller
+ * should keep the original backdrop. A real photograph with its own background
+ * beats a cutout of a bottle's label with the bottle deleted.
+ */
+function detectLeak(
+  bounds: MaskResult['bounds'],
+  inkBounds: MaskResult['bounds'],
+): boolean {
+  if (!bounds || !inkBounds) return false;
+  const inkArea = inkBounds.width * inkBounds.height;
+  if (inkArea <= 0) return false;
+  return (bounds.width * bounds.height) / inkArea < 0.5;
 }
 
 function scoreMask(input: {
@@ -231,11 +363,13 @@ function scoreMask(input: {
   borderIsUniform: boolean;
   variance: number;
   bounds: MaskResult['bounds'];
+  fillLeaked: boolean;
   width: number;
   height: number;
 }): number {
   if (!input.bounds) return 0;
   if (!input.borderIsUniform) return 0.15;
+  if (input.fillLeaked) return 0.2;
 
   // Nothing removed means there was no backdrop; nearly everything removed
   // means the fill leaked through the product.

@@ -294,6 +294,21 @@ the frame, it reports low confidence and the pipeline **keeps the original
 background** rather than punching a hole through the product. `remove.bg` is
 available for the hard cases (soft edges, hair, glass, lifestyle shots).
 
+There is one failure a colour-based fill cannot see for itself: a **pale product
+on a pale backdrop**. A white bottle on a white sweep is absorbed by any
+tolerance worth using, and what comes back is a mask of its *label* — compact,
+plausible, and scoring well on every signal a mask can offer. Rendered, that
+deletes the product and leaves its graphics floating in space.
+
+So the frame is also measured for structure — where neighbouring pixels differ
+at all. A white bottle still has a silhouette, a shoulder, a shadow. When the
+fill has kept only a fraction of what the picture visibly contains, the fill is
+judged to have leaked, the cutout is declined, and the original photograph is
+kept. A real photo on its own background beats a cutout with the product
+removed. Trimming is held back on the same images for the same reason: it is the
+same judgement made cruder, and a threshold that tidies a margin will eat a
+bottle that is six levels off white.
+
 ### Promotional overlays
 
 Image search returns retail *listing* images as readily as product photographs,

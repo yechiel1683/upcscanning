@@ -128,6 +128,7 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   // that is thrown away by the final resize anyway.
   let silhouetteMask: MaskResult | null = null;
   let overlaysErased = false;
+  let fillLeaked = false;
   let backgroundRemoved = false;
   let foregroundRatio: number | undefined;
   let maskConfidence: number | undefined;
@@ -166,6 +167,11 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
       );
       mask = buildForegroundMask(cleaned, smallInfo.width, smallInfo.height, {
         channels: smallInfo.channels,
+        // The leak check cannot be re-derived here — erasing a panel shrinks
+        // the mask on purpose, which is indistinguishable from the fill having
+        // eaten the product. The first pass's verdict, taken on the untouched
+        // photograph, is the one that counts, and it is applied at the gate.
+        inkBounds: null,
       });
       overlaysErased = true;
     }
@@ -173,7 +179,9 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
     foregroundRatio = mask.foregroundRatio;
     maskConfidence = mask.confidence;
 
-    if (mask.confidence >= CUTOUT_CONFIDENCE_THRESHOLD && mask.bounds) {
+    fillLeaked = raw.fillLeaked;
+
+    if (!fillLeaked && mask.confidence >= CUTOUT_CONFIDENCE_THRESHOLD && mask.bounds) {
       silhouetteMask = mask;
       backgroundRemoved = true;
     }
@@ -245,7 +253,14 @@ export async function renderProductImage(input: RenderInput): Promise<RenderResu
   } else if (border.variance < 400) {
     // Not confident enough to cut out. If the backdrop is at least uniform we
     // can still trim the flat margins so framing stays consistent.
-    subject = subject.trim({ threshold: 12 });
+    //
+    // But trimming is the same judgement as the fill, made cruder: it discards
+    // whatever sits within a threshold of the corner pixel. On the images where
+    // the fill ate a pale product, a threshold of 12 eats it again — the bottle
+    // that defeated segmentation is six levels off the backdrop. So when the
+    // fill is known to have leaked, trim tightly enough to take only the margin
+    // and leave the product where it is.
+    subject = subject.trim({ threshold: fillLeaked ? 3 : 12 });
   }
 
   const fit = {

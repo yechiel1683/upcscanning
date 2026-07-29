@@ -27,6 +27,13 @@ interface GuestInfo {
   startingCredits: number;
 }
 
+interface Capabilities {
+  barcodeLookup: { count: number; providers: string[] };
+  webSearch: { enabled: boolean; providers: string[] };
+  generation: { enabled: boolean; provider: string | null };
+  fullyConfigured: boolean;
+}
+
 interface GuestImage {
   id: string;
   kind: string;
@@ -78,6 +85,7 @@ export function TryClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<BatchState | null>(null);
+  const [caps, setCaps] = useState<Capabilities | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -85,6 +93,11 @@ export function TryClient() {
     void fetch('/api/guest/session', { method: 'POST' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => d && setInfo(d.guest))
+      .catch(() => {});
+
+    void fetch('/api/guest/capabilities')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setCaps(d))
       .catch(() => {});
   }, []);
 
@@ -167,6 +180,26 @@ export function TryClient() {
           ) : null}
         </div>
       </Card>
+
+      {caps && !caps.fullyConfigured ? (
+        <Card className="border-warning/40 bg-warning-soft">
+          <div className="p-4">
+            <p className="text-sm font-semibold text-fg">
+              This instance is only partly set up
+            </p>
+            <p className="mt-1.5 text-sm leading-relaxed text-muted">
+              {caps.webSearch.enabled
+                ? 'Web image search is on, but there is no fallback for products with no photo anywhere.'
+                : `Only ${caps.barcodeLookup.count} free barcode database(s) can find images. Products those do not carry will fail, and there is no fallback.`}{' '}
+              Set{' '}
+              <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-xs text-fg">
+                OPENAI_API_KEY
+              </code>{' '}
+              on the server to turn on web image search and generated images.
+            </p>
+          </div>
+        </Card>
+      ) : null}
 
       {!state ? (
         <Card>

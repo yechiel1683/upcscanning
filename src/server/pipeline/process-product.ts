@@ -201,7 +201,9 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   const goodEnough = (result: typeof best) =>
     Boolean(result && result.matchScore >= CONFIDENT_MATCH_THRESHOLD && result.qualityScore >= 0.7);
 
+  let searchedWeb = false;
   if (!goodEnough(best)) {
+    searchedWeb = true;
     const web = await searchWeb(searchContext, { directImageUrl: product.imageUrl });
     for (const error of web.errors) {
       log.push(`Search provider ${error.provider} failed: ${error.message}`);
@@ -245,13 +247,14 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   }
 
   // --- 5. Workflow B: generate --------------------------------------------
+  // What actually happened in Workflow A, so a failure says which step came up
+  // empty rather than only that the fallback was unavailable.
+  const searchSummary = summariseSearch(evaluated, Boolean(facts), searchedWeb);
+
   if (!options.allowAiGeneration) {
     return {
       status: 'failed',
-      reason:
-        evaluated.length === 0
-          ? 'No product image could be found, and AI generation is turned off for this batch.'
-          : 'No candidate image passed the match and quality checks, and AI generation is turned off for this batch.',
+      reason: `${searchSummary} AI generation is turned off for this batch.`,
       enrichment,
       facts,
       candidates: evaluated,
@@ -264,8 +267,9 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     return {
       status: 'failed',
       reason:
-        'No real product image was found and no AI image provider is configured. ' +
-        'Set OPENAI_API_KEY (or another generation provider) to enable fallback generation.',
+        `${searchSummary} No AI image provider is configured either, so there was no ` +
+        'fallback. Set OPENAI_API_KEY on the server to enable web image search and ' +
+        'generated images.',
       enrichment,
       facts,
       candidates: evaluated,
@@ -310,6 +314,36 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       log,
     };
   }
+}
+
+/**
+ * One sentence describing how Workflow A ended.
+ *
+ * "No image found" is not a diagnosis. Knowing whether nothing was returned at
+ * all, or plenty was returned and rejected, is the difference between "add a
+ * search provider" and "the matching is too strict for this catalogue".
+ */
+function summariseSearch(
+  evaluated: EvaluatedCandidate[],
+  identified: boolean,
+  searchedWeb: boolean,
+): string {
+  if (evaluated.length === 0) {
+    return identified
+      ? 'The product was identified, but no image source returned a candidate for it.'
+      : searchedWeb
+        ? 'No product database recognised this item and no image search returned a candidate.'
+        : 'No product database recognised this item.';
+  }
+
+  const rejected = evaluated.filter((entry) => entry.rejected);
+  const reason = rejected[0]?.rejectedReason;
+
+  return (
+    `Found ${evaluated.length} candidate image(s) but rejected ${rejected.length}` +
+    (reason ? ` (first: ${reason.toLowerCase()})` : '') +
+    '.'
+  );
 }
 
 // ---------------------------------------------------------------------------

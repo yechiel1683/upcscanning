@@ -48,7 +48,7 @@ vi.mock('@/server/providers/bgremove', () => ({
   removeBackgroundHosted: vi.fn(),
 }));
 
-const { processProduct } = await import('@/server/pipeline/process-product');
+const { processProduct, resetRenderMemo } = await import('@/server/pipeline/process-product');
 
 function candidate(name: string, confidence = 0.95): SearchCandidate {
   return {
@@ -79,6 +79,10 @@ const goodAnalysis = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Rendered images are cached by source URL across the process, so without
+  // this a later test is served an earlier one's render and never exercises
+  // the path it is about.
+  resetRenderMemo();
   generationProvider.mockReturnValue(null);
   verificationAvailable.mockReturnValue(false);
   verifyProductImage.mockResolvedValue({ verdict: "unknown", shown: "", reason: "not configured" });
@@ -182,6 +186,75 @@ describe('cost of a barcode nothing recognises', () => {
 
     await processProduct(input);
     expect(renderProductImage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('running the same barcode again', () => {
+  it('does not re-download, re-analyse or re-render the same photograph', async () => {
+    // The case somebody is actually watching. Nothing about rendering an image
+    // depends on anything but its URL and the output settings, so the second
+    // run should be the cache and nothing else.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [candidate('a')],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    const first = await processProduct(input);
+    expect(first.status).toBe('succeeded');
+    expect(renderProductImage).toHaveBeenCalledTimes(1);
+
+    const second = await processProduct(input);
+    expect(second.status).toBe('succeeded');
+    expect(renderProductImage).toHaveBeenCalledTimes(1);
+    expect(fetchBinary).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders again when the output settings change', async () => {
+    // Otherwise a different size or background would be served the old image.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [candidate('a')],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    await processProduct(input);
+    await processProduct({
+      ...input,
+      options: { ...DEFAULT_RENDER_OPTIONS, width: 800, height: 800 },
+    });
+
+    expect(renderProductImage).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('weighing several candidates', () => {
+  it('fetches them together rather than one after another', async () => {
+    // Each is a download from a different host and none informs the next, so in
+    // sequence the product waits for the sum of them.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [candidate('a', 0.5), candidate('b', 0.5), candidate('c', 0.5)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    let inFlight = 0;
+    let peak = 0;
+    fetchBinary.mockImplementation(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      inFlight -= 1;
+      const jpeg = Buffer.alloc(400_000, 0x7f);
+      jpeg.set([0xff, 0xd8, 0xff, 0xe0], 0);
+      return { buffer: jpeg, contentType: 'image/jpeg' };
+    });
+
+    await processProduct(input);
+    expect(peak).toBeGreaterThan(1);
   });
 });
 

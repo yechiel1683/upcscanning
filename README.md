@@ -395,6 +395,23 @@ work is arranged around never doing anything twice:
 - **The source is decoded once, at the size the output needs.** The
   segmentation bounds say how much of the frame is product, which is what
   decides how many source pixels can possibly survive the crop.
+- **Candidates are weighed a few at a time.** Each is a download from a
+  different host and none informs the next, so in sequence a product waits for
+  the sum of them instead of the slowest.
+- **Scoring segments at 448px, rendering at 640px.** The render needs a mask
+  precise enough to cut along. Scoring needs four numbers that do not move
+  between the two sizes — 0.282 against 0.280 for the same photograph — at
+  154ms instead of 335ms, on every candidate of every product.
+- **A barcode seen before is answered from memory.** The durable lookup cache
+  lives in Postgres, which guest mode does not have, so every lookup went out
+  live every time — the wait on the second try, and the reason a free tier's
+  hundred daily lookups ran out by the afternoon. A small in-process cache now
+  sits in front of it and works with or without a database.
+- **An image rendered before is not rendered again.** Nothing about rendering
+  depends on anything but the source URL and the output settings, so a repeat
+  skips the download, the analysis and the render entirely. Re-running the same
+  barcode is the case somebody is actually watching, and it is the one that
+  should feel instant.
 
 That last one is most of the difference. Rendering a 4000×4000 source took 5.9s,
 of which 4.6s was encoding full-resolution PNGs between steps and asking `trim`

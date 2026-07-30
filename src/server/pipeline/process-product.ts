@@ -23,6 +23,7 @@ import {
   type EnrichmentInput,
 } from '@/server/providers/llm/enrichment';
 import { lookupBarcodeCached, searchWeb, type SearchContext } from '@/server/providers/search';
+import { Memo } from '@/server/lib/memo';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
 /**
@@ -99,6 +100,46 @@ export type ProcessOutcome = SuccessOutcome | FailureOutcome;
 
 const DEFAULT_MAX_DOWNLOADS = 5;
 const CANDIDATE_LIMIT = 12;
+
+/**
+ * Rendered images, keyed by where they came from and how they were rendered.
+ *
+ * The same barcode run twice re-downloaded the same photograph, re-analysed it
+ * and re-rendered it to produce a byte-identical result. Nothing about that
+ * work depends on anything but the source URL and the render options, so the
+ * second run can skip all of it — which is the difference between "a few
+ * seconds" and "instant" for the case somebody is actually watching: trying the
+ * same code again.
+ *
+ * Small on purpose. Each entry holds a finished JPEG, so forty of them is a few
+ * megabytes, and memory is the constraint that kills this container.
+ */
+interface RememberedImage {
+  render: RenderResult;
+  qualityScore: number;
+}
+
+const renderedImages = new Memo<RememberedImage>({ ttlMs: 60 * 60_000, max: 40 });
+
+/** Test hook: forget rendered images. */
+export function resetRenderMemo(): void {
+  renderedImages.clear();
+}
+
+/** What actually determines the output, so nothing stale is ever served. */
+function renderKey(sourceUrl: string, options: RenderOptions): string {
+  return [
+    sourceUrl,
+    options.width,
+    options.height,
+    options.format,
+    options.quality,
+    options.background,
+    options.padding,
+    options.removeBackground ? 'cut' : 'keep',
+    options.dropShadow ? 'shadow' : 'flat',
+  ].join('|');
+}
 
 /** A name we invented from a barcode carries no information worth searching. */
 function isPlaceholderName(name: string, upc?: string | null, sku?: string | null): boolean {
@@ -196,6 +237,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     candidates: barcodeCandidates,
     searchContext,
     product: resolved,
+    options,
     evaluated,
     log,
     maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
@@ -236,6 +278,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       candidates: web.candidates,
       searchContext,
       product: resolved,
+      options,
       evaluated,
       log,
       maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
@@ -253,7 +296,9 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     // reads right. A confident match skips this: it costs a call and a second,
     // and the whole point of the barcode-first order is that those cases are
     // already settled.
-    if (best.matchScore < CONFIDENT_MATCH_THRESHOLD && verificationAvailable()) {
+    // A cached winner was already verified the first time it was accepted, and
+    // nothing about the image has changed since.
+    if (best.source && best.matchScore < CONFIDENT_MATCH_THRESHOLD && verificationAvailable()) {
       const check = await verifyProductImage({
         buffer: best.source,
         title: enrichment.canonicalTitle,
@@ -277,8 +322,15 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   if (best) {
     // The one render in the whole of Workflow A.
     try {
-      const prepared = await maybeHostedCutout(best.source, options, log);
-      const render = await renderProductImage({ buffer: prepared, options });
+      let render = best.cached;
+      if (!render) {
+        const prepared = await maybeHostedCutout(best.source!, options, log);
+        render = await renderProductImage({ buffer: prepared, options });
+        renderedImages.set(renderKey(best.candidate.sourceUrl, options), {
+          render,
+          qualityScore: best.qualityScore,
+        });
+      }
 
       const winner = evaluated.find(
         (entry) => entry.candidate.sourceUrl === best!.candidate.sourceUrl,
@@ -460,13 +512,16 @@ interface Winner {
    * analysis pass, which is far cheaper, so the render waits until there is
    * exactly one image left to render.
    */
-  source: Buffer;
+  source: Buffer | null;
+  /** Set when this candidate was served from the cache and needs no work. */
+  cached: RenderResult | null;
 }
 
 interface EvaluateArgs {
   candidates: SearchCandidate[];
   searchContext: SearchContext;
   product: ProcessInput['product'];
+  options: RenderOptions;
   evaluated: EvaluatedCandidate[];
   log: string[];
   maxDownloads: number;
@@ -479,6 +534,7 @@ interface EvaluateArgs {
  */
 async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
   const { candidates, searchContext, product, evaluated, log } = args;
+
   if (candidates.length === 0) return args.incumbent ?? null;
 
   const ranked = candidates
@@ -514,17 +570,90 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
   let best = args.incumbent ?? null;
   let downloads = 0;
 
-  for (const { candidate, assessment } of viable) {
+  /**
+   * Candidates are weighed a few at a time rather than one after another.
+   *
+   * Each one is a download from a different host followed by an image decode,
+   * and none of them informs the next — the ranking that decides which to try
+   * was fixed before any of this. In sequence the product waits for the sum;
+   * in a wave it waits for the slowest of three.
+   *
+   * Waves rather than all at once, because the early stop is worth keeping: the
+   * first candidate is usually the manufacturer's own photograph, and when it
+   * is both a confident match and a good picture there is no reason to have
+   * fetched anything else.
+   */
+  const WAVE = 3;
+
+  for (let offset = 0; offset < viable.length; offset += WAVE) {
     if (downloads >= args.maxDownloads) break;
-    // Stop early once we hold something that is both a confident match and a
-    // good photo — extra downloads cost time and add nothing.
     if (best && best.matchScore >= CONFIDENT_MATCH_THRESHOLD && best.qualityScore >= 0.75) break;
 
-    downloads += 1;
+    const wave = viable.slice(offset, offset + Math.min(WAVE, args.maxDownloads - downloads));
 
-    try {
-      const source = await downloadAndPrepare(candidate.sourceUrl);
-      const analysis = await analyseImage(source);
+    // Anything already rendered from this exact URL, at these exact settings,
+    // needs no network and no pixels — it was downloaded, scored, verified and
+    // rendered the last time, and none of those answers depend on anything that
+    // has changed since. This is what makes re-running a barcode instant rather
+    // than merely quick.
+    const remembered = wave
+      .map((entry) => ({ entry, hit: renderedImages.get(renderKey(entry.candidate.sourceUrl, args.options)) }))
+      .find((row) => row.hit);
+
+    if (remembered?.hit) {
+      const { candidate, assessment } = remembered.entry;
+      const combined = assessment.score * 0.65 + remembered.hit.qualityScore * 0.35;
+      const bestCombined = best ? best.matchScore * 0.65 + best.qualityScore * 0.35 : -1;
+      if (combined > bestCombined) {
+        best = {
+          candidate,
+          matchScore: assessment.score,
+          qualityScore: remembered.hit.qualityScore,
+          source: null,
+          cached: remembered.hit.render,
+        };
+      }
+      evaluated.push({
+        candidate,
+        matchScore: assessment.score,
+        qualityScore: remembered.hit.qualityScore,
+        rejected: false,
+        selected: false,
+      });
+      log.push(`Reused the rendered image for ${hostOf(candidate.sourceUrl)}`);
+      continue;
+    }
+
+    downloads += wave.length;
+
+    const results = await Promise.all(
+      wave.map(async ({ candidate, assessment }) => {
+        try {
+          const source = await downloadAndPrepare(candidate.sourceUrl);
+          const analysis = await analyseImage(source);
+          return { candidate, assessment, source, analysis, error: null };
+        } catch (error) {
+          return { candidate, assessment, source: null, analysis: null, error };
+        }
+      }),
+    );
+
+    // Scored in ranking order, not completion order, so which image wins never
+    // depends on which host happened to answer first.
+    for (const { candidate, assessment, source, analysis, error } of results) {
+      if (error || !source || !analysis) {
+        const message = error instanceof Error ? error.message : String(error);
+        evaluated.push({
+          candidate,
+          matchScore: assessment.score,
+          qualityScore: 0,
+          rejected: true,
+          rejectedReason: message,
+          selected: false,
+        });
+        log.push(`Failed to fetch ${hostOf(candidate.sourceUrl)}: ${message}`);
+        continue;
+      }
 
       const quality = scoreQuality({
         width: analysis.width,
@@ -554,7 +683,13 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
       const bestCombined = best ? best.matchScore * 0.65 + best.qualityScore * 0.35 : -1;
 
       if (combined > bestCombined) {
-        best = { candidate, matchScore: assessment.score, qualityScore: quality.score, source };
+        best = {
+          candidate,
+          matchScore: assessment.score,
+          qualityScore: quality.score,
+          source,
+          cached: null,
+        };
       }
 
       evaluated.push({
@@ -567,17 +702,6 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
       log.push(
         `Accepted ${hostOf(candidate.sourceUrl)} — match ${assessment.score.toFixed(2)}, quality ${quality.score.toFixed(2)} (${quality.notes.join(', ') || 'no notes'})`,
       );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      evaluated.push({
-        candidate,
-        matchScore: assessment.score,
-        qualityScore: 0,
-        rejected: true,
-        rejectedReason: message,
-        selected: false,
-      });
-      log.push(`Failed to fetch ${hostOf(candidate.sourceUrl)}: ${message}`);
     }
   }
 

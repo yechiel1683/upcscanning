@@ -115,15 +115,37 @@ export function TryClient() {
     return data;
   }, []);
 
+  /**
+   * Check often at first, then ease off.
+   *
+   * A fixed two-second interval put up to two seconds of pure waiting between a
+   * barcode being finished and being visible — on work that now takes about
+   * that long in total, so half the wait was the page not looking. A single
+   * barcode is usually done before the second check, and a long batch does not
+   * need to be asked four times a second, so the interval starts at 300ms and
+   * grows towards two seconds.
+   */
   useEffect(() => {
     if (!state?.progress.isRunning) return;
     const id = state.batch.id;
-    const timer = setInterval(() => {
+    let cancelled = false;
+    let delay = 300;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const tick = () => {
       void poll(id).then((next) => {
-        if (next && !next.progress.isRunning) clearInterval(timer);
+        if (cancelled) return;
+        if (next && !next.progress.isRunning) return;
+        delay = Math.min(Math.round(delay * 1.4), 2000);
+        timer = setTimeout(tick, delay);
       });
-    }, 2000);
-    return () => clearInterval(timer);
+    };
+    timer = setTimeout(tick, delay);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [state?.progress.isRunning, state?.batch.id, poll]);
 
   async function start() {

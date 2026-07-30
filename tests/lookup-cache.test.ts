@@ -87,7 +87,7 @@ vi.mock('@/server/providers/search/barcode', async () => {
   };
 });
 
-const { lookupBarcodeCached, pruneLookupCache } = await import('@/server/providers/search');
+const { lookupBarcodeCached, pruneLookupCache, resetLookupMemo } = await import('@/server/providers/search');
 const { resetEnvCache } = await import('@/lib/env');
 
 const context = {
@@ -116,6 +116,9 @@ const hit = {
 
 beforeEach(() => {
   store.clear();
+  // The process-local cache in front of Postgres would otherwise answer from a
+  // previous test, which is exactly what it is for and exactly wrong here.
+  resetLookupMemo();
   searchSpy.mockReset();
   delete process.env.LOOKUP_CACHE_ENABLED;
   resetEnvCache();
@@ -158,7 +161,10 @@ describe('lookupBarcodeCached', () => {
     await lookupBarcodeCached(context);
     const missExpiry = store.get('036000291452')!.expiresAt.getTime();
 
+    // Emptying the durable cache stands for a fresh instance, which would have
+    // an empty front cache too.
     store.clear();
+    resetLookupMemo();
     searchSpy.mockResolvedValue(hit);
     await lookupBarcodeCached(context);
     const hitExpiry = store.get('036000291452')!.expiresAt.getTime();
@@ -185,6 +191,10 @@ describe('lookupBarcodeCached', () => {
 
     const row = store.get('036000291452')!;
     row.expiresAt = new Date(Date.now() - 1000);
+    // These tests age an entry by rewriting its expiry rather than moving the
+    // clock, which the process-local cache in front of Postgres cannot see.
+    // Real elapsed time expires both.
+    resetLookupMemo();
 
     await lookupBarcodeCached(context);
     expect(searchSpy).toHaveBeenCalledTimes(2);

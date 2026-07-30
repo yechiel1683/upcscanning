@@ -4,6 +4,7 @@ import { env } from '@/lib/env';
 import { mergeFacts, type ProductFacts, type SearchCandidate } from '@/lib/types';
 import { prisma } from '@/server/db';
 import { withRateLimit } from '@/server/lib/rate-limit';
+import { Memo } from '@/server/lib/memo';
 import {
   goUpcProvider,
   openBeautyFactsProvider,
@@ -169,12 +170,40 @@ export async function lookupBarcodeWith(
  * Errors are never cached: a provider outage must not poison a barcode for
  * days. A genuine "no database knows this" *is* cached, but briefly.
  */
+/**
+ * In front of Postgres, and the only cache guest mode has.
+ *
+ * Without a database `readCache` throws on every call, is caught, and falls
+ * through to a live lookup — so the same barcode typed twice cost two round
+ * trips and two of a free tier's hundred daily lookups. That is both the wait
+ * the second time and, once the day's allowance is gone, the reason a barcode
+ * that resolved this morning resolves to nothing this afternoon.
+ */
+const recentLookups = new Memo<TierResult>({ ttlMs: 30 * 60_000, max: 500 });
+
+/** Test hook: forget what this process has seen. */
+export function resetLookupMemo(): void {
+  recentLookups.clear();
+}
+
 export async function lookupBarcodeCached(context: SearchContext): Promise<TierResult> {
   const upc = context.upc;
   if (!upc || !env().LOOKUP_CACHE_ENABLED) return lookupBarcode(context);
 
+  const remembered = recentLookups.get(upc);
+  if (remembered) {
+    // Still count it. The popularity figure is what says which barcodes are
+    // worth keeping warm, and a front cache that answers silently would make
+    // the most-asked-for codes look like the least.
+    bumpHits(upc);
+    return { ...remembered, cached: true };
+  }
+
   const cached = await readCache(upc);
-  if (cached) return cached;
+  if (cached) {
+    recentLookups.set(upc, cached);
+    return cached;
+  }
 
   const fresh = await lookupBarcode(context);
 
@@ -183,6 +212,7 @@ export async function lookupBarcodeCached(context: SearchContext): Promise<TierR
   const everyProviderFailed =
     fresh.errors.length > 0 && fresh.candidates.length === 0 && !fresh.facts;
   if (!everyProviderFailed) {
+    recentLookups.set(upc, fresh);
     await writeCache(upc, fresh).catch((error) =>
       console.warn('[lookup-cache] write failed', error),
     );
@@ -191,15 +221,19 @@ export async function lookupBarcodeCached(context: SearchContext): Promise<TierR
   return fresh;
 }
 
+/** Best-effort popularity counter; never block a lookup on it. */
+function bumpHits(upc: string): void {
+  void prisma.barcodeLookup
+    .update({ where: { upc }, data: { hits: { increment: 1 } } })
+    .catch(() => {});
+}
+
 async function readCache(upc: string): Promise<TierResult | null> {
   try {
     const row = await prisma.barcodeLookup.findUnique({ where: { upc } });
     if (!row || row.expiresAt < new Date()) return null;
 
-    // Best-effort popularity counter; never block a lookup on it.
-    void prisma.barcodeLookup
-      .update({ where: { upc }, data: { hits: { increment: 1 } } })
-      .catch(() => {});
+    bumpHits(upc);
 
     return {
       candidates: (row.candidates as unknown as SearchCandidate[]) ?? [],

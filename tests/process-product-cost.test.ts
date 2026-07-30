@@ -30,7 +30,12 @@ vi.mock('@/server/images/render', () => ({
   mimeTypeFor: () => 'image/jpeg',
 }));
 
-vi.mock('@/server/providers/search', () => ({ lookupBarcodeCached, searchWeb }));
+const webProviders = vi.fn(() => [{ name: 'openai-web' }]);
+vi.mock('@/server/providers/search', () => ({
+  lookupBarcodeCached,
+  searchWeb,
+  availableProviders: (tier?: string) => (tier === 'web' ? webProviders() : []),
+}));
 vi.mock('@/server/lib/http', () => ({ fetchBinary }));
 
 const generate = vi.fn();
@@ -83,6 +88,7 @@ beforeEach(() => {
   // this a later test is served an earlier one's render and never exercises
   // the path it is about.
   resetRenderMemo();
+  webProviders.mockReturnValue([{ name: 'openai-web' }]);
   generationProvider.mockReturnValue(null);
   verificationAvailable.mockReturnValue(false);
   verifyProductImage.mockResolvedValue({ verdict: "unknown", shown: "", reason: "not configured" });
@@ -338,6 +344,64 @@ describe('choosing between two real photographs of the right product', () => {
 
     await processProduct(input);
     expect(searchWeb).not.toHaveBeenCalled();
+  });
+});
+
+describe('saying why a product failed', () => {
+  const deadLink = {
+    candidates: [candidate('a')],
+    facts,
+    errors: [],
+    providers: ['upcitemdb'],
+  };
+
+  beforeEach(() => {
+    // A barcode database handing back a dead link is routine — those records
+    // hotlink retailer CDNs that expire — so it is never the whole story.
+    fetchBinary.mockRejectedValue(new Error('Image host returned 404'));
+    lookupBarcodeCached.mockResolvedValue(deadLink);
+  });
+
+  it('says when there was nowhere else to look', async () => {
+    webProviders.mockReturnValue([]);
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status === 'failed') {
+      expect(outcome.reason).toContain('404');
+      // The part that answers "is this my barcode or your server".
+      expect(outcome.reason).toContain('OPENAI_API_KEY');
+    }
+  });
+
+  it('names the search failure rather than blaming the barcode', async () => {
+    webProviders.mockReturnValue([{ name: 'openai-web' }]);
+    searchWeb.mockResolvedValue({
+      candidates: [],
+      errors: [{ provider: 'openai-web', message: 'Invalid value: web_search' }],
+      facts: undefined,
+    });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status === 'failed') {
+      expect(outcome.reason).toContain('openai-web');
+      expect(outcome.reason).toContain('web_search');
+    }
+  });
+
+  it('says the search simply found nothing when that is the truth', async () => {
+    webProviders.mockReturnValue([{ name: 'openai-web' }]);
+    searchWeb.mockResolvedValue({ candidates: [], errors: [], facts: undefined });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status === 'failed') {
+      expect(outcome.reason).toMatch(/found nothing/i);
+    }
   });
 });
 

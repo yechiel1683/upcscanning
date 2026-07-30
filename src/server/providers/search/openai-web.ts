@@ -1,7 +1,7 @@
 import { env } from '@/lib/env';
 import type { ProductFacts, SearchCandidate, SearchResult } from '@/lib/types';
 import { fetchJson, HttpError, withRetry } from '@/server/lib/http';
-import type { SearchContext, SearchProvider } from './types';
+import type { SearchProvider } from './types';
 
 /**
  * Image discovery through OpenAI's hosted web-search tool.
@@ -88,8 +88,6 @@ export const openAiWebProvider: SearchProvider = {
   },
 
   async search(context): Promise<SearchResult> {
-    const config = env();
-
     const query = [
       context.upc ? `Barcode (UPC/EAN): ${context.upc}` : null,
       `Product: ${context.enrichment.canonicalTitle}`,
@@ -104,25 +102,7 @@ export const openAiWebProvider: SearchProvider = {
       .filter((line) => line !== null)
       .join('\n');
 
-    const data = await withRetry(() =>
-      fetchJson<ResponsesApiResponse>('https://api.openai.com/v1/responses', {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${config.OPENAI_API_KEY}`,
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: config.OPENAI_SEARCH_MODEL,
-          instructions: INSTRUCTIONS,
-          input: query,
-          tools: [{ type: 'web_search' }],
-          // Browsing plus a JSON answer takes a while; the outer HTTP timeout
-          // is far too short for it.
-          max_output_tokens: 1200,
-        }),
-        timeoutMs: 90_000,
-      }),
-    );
+    const data = await browse(query);
 
     if (data.error?.message) throw new HttpError(`OpenAI web search: ${data.error.message}`);
 
@@ -171,6 +151,78 @@ export const openAiWebProvider: SearchProvider = {
     return { candidates, facts: confidence >= 0.6 ? facts : undefined };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Calling the API
+// ---------------------------------------------------------------------------
+
+/**
+ * The hosted browsing tool has gone by two names.
+ *
+ * It shipped as `web_search_preview` and was later also exposed as
+ * `web_search`, and which one an account accepts depends on the API version it
+ * is pinned to. Sending the wrong one is not a soft failure — it is a 400 that
+ * takes the entire web tier down, silently, leaving a pipeline that looks like
+ * it simply cannot find anything. Every product then falls through to whatever
+ * comes next, which is exactly what a dead barcode link looks like from the
+ * outside.
+ *
+ * So try both, and remember which worked. The discovery costs one extra request
+ * once per process, and never having to think about it again is worth that.
+ */
+const TOOL_NAMES = ['web_search', 'web_search_preview'] as const;
+
+let workingTool: string | null = null;
+
+/** Test hook: forget which tool name this process settled on. */
+export function resetWebSearchTool(): void {
+  workingTool = null;
+}
+
+/** Does this error say the tool name was the problem, rather than the request? */
+function looksLikeUnknownTool(error: unknown): boolean {
+  if (!(error instanceof HttpError) || error.status !== 400) return false;
+  return /web_search|tool/i.test(error.message);
+}
+
+async function browse(query: string): Promise<ResponsesApiResponse> {
+  const config = env();
+  const attempts = workingTool ? [workingTool] : TOOL_NAMES;
+  let lastError: unknown;
+
+  for (const tool of attempts) {
+    try {
+      const data = await withRetry(() =>
+        fetchJson<ResponsesApiResponse>('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${config.OPENAI_API_KEY}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: config.OPENAI_SEARCH_MODEL,
+            instructions: INSTRUCTIONS,
+            input: query,
+            tools: [{ type: tool }],
+            // Browsing plus a JSON answer takes a while; the outer HTTP timeout
+            // is far too short for it.
+            max_output_tokens: 1200,
+          }),
+          timeoutMs: 90_000,
+        }),
+      );
+      workingTool = tool;
+      return data;
+    } catch (error) {
+      lastError = error;
+      // Anything that is not "I do not know that tool" is a real failure and
+      // must not be retried under a different name.
+      if (!looksLikeUnknownTool(error)) throw error;
+    }
+  }
+
+  throw lastError;
+}
 
 // ---------------------------------------------------------------------------
 // Response parsing

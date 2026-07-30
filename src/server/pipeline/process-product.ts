@@ -22,7 +22,12 @@ import {
   heuristicEnrichment,
   type EnrichmentInput,
 } from '@/server/providers/llm/enrichment';
-import { lookupBarcodeCached, searchWeb, type SearchContext } from '@/server/providers/search';
+import {
+  availableProviders,
+  lookupBarcodeCached,
+  searchWeb,
+  type SearchContext,
+} from '@/server/providers/search';
 import { Memo } from '@/server/lib/memo';
 import { scoreRecency } from '@/server/images/recency';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
@@ -140,6 +145,11 @@ function renderKey(sourceUrl: string, options: RenderOptions): string {
     options.removeBackground ? 'cut' : 'keep',
     options.dropShadow ? 'shadow' : 'flat',
   ].join('|');
+}
+
+/** Is there anywhere to look beyond the barcode databases? */
+function webSearchConfigured(): boolean {
+  return availableProviders('web').length > 0;
 }
 
 /** A name we invented from a barcode carries no information worth searching. */
@@ -263,6 +273,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     best !== null && scoreRecency({ sourceUrl: best.candidate.sourceUrl }).score < 0.5;
 
   let searchedWeb = false;
+  let webErrors: Array<{ provider: string; message: string }> = [];
   if (!goodEnough(best) || (options.preferNewest && barcodeImageLooksArchival)) {
     searchedWeb = true;
 
@@ -281,6 +292,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
         ` via ${enrichment.source}`,
     );
     const web = await searchWeb(searchContext, { directImageUrl: product.imageUrl });
+    webErrors = web.errors;
     for (const error of web.errors) {
       log.push(`Search provider ${error.provider} failed: ${error.message}`);
     }
@@ -385,7 +397,13 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   // --- 5. Workflow B: generate --------------------------------------------
   // What actually happened in Workflow A, so a failure says which step came up
   // empty rather than only that the fallback was unavailable.
-  const searchSummary = summariseSearch(evaluated, Boolean(facts), searchedWeb);
+  const searchSummary = summariseSearch({
+    evaluated,
+    identified: Boolean(facts),
+    searchedWeb,
+    webAvailable: webSearchConfigured(),
+    webErrors,
+  });
 
   if (!options.allowAiGeneration) {
     return {
@@ -491,17 +509,43 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
  * all, or plenty was returned and rejected, is the difference between "add a
  * search provider" and "the matching is too strict for this catalogue".
  */
-function summariseSearch(
-  evaluated: EvaluatedCandidate[],
-  identified: boolean,
-  searchedWeb: boolean,
-): string {
-  if (evaluated.length === 0) {
-    return identified
-      ? 'The product was identified, but no image source returned a candidate for it.'
+interface SearchSummaryInput {
+  evaluated: EvaluatedCandidate[];
+  identified: boolean;
+  searchedWeb: boolean;
+  /** Whether a web image search provider is configured at all. */
+  webAvailable: boolean;
+  /** Errors the web tier reported, if it ran. */
+  webErrors: Array<{ provider: string; message: string }>;
+}
+
+/**
+ * One sentence describing how Workflow A ended.
+ *
+ * "No image found" is not a diagnosis, and neither is the reason the *first*
+ * tier gave. A barcode database handing back a dead link is completely normal —
+ * those records hotlink retailer CDNs that expire — and it only becomes a
+ * failure when the tier behind it also comes up empty. Reporting the 404 alone
+ * blames the barcode for something that is usually the search tier being
+ * unconfigured or broken, which is the difference between "this product is
+ * obscure" and "fix your server".
+ */
+function summariseSearch(input: SearchSummaryInput): string {
+  const { evaluated, identified, searchedWeb, webAvailable, webErrors } = input;
+
+  const webNote = !webAvailable
+    ? ' No web image search is configured on this server, so there was nowhere else to look — set OPENAI_API_KEY to enable it.'
+    : webErrors.length > 0
+      ? ` The web image search also failed (${webErrors[0]?.provider}: ${webErrors[0]?.message}).`
       : searchedWeb
-        ? 'No product database recognised this item and no image search returned a candidate.'
-        : 'No product database recognised this item.';
+        ? ' The web image search found nothing either.'
+        : '';
+
+  if (evaluated.length === 0) {
+    const head = identified
+      ? 'The product was identified, but no image source returned a candidate for it.'
+      : 'No product database recognised this item.';
+    return head + webNote;
   }
 
   const rejected = evaluated.filter((entry) => entry.rejected);
@@ -510,7 +554,8 @@ function summariseSearch(
   return (
     `Found ${evaluated.length} candidate image(s) but rejected ${rejected.length}` +
     (reason ? ` (first: ${reason.toLowerCase()})` : '') +
-    '.'
+    '.' +
+    webNote
   );
 }
 

@@ -32,7 +32,17 @@ vi.mock('@/server/images/render', () => ({
 
 vi.mock('@/server/providers/search', () => ({ lookupBarcodeCached, searchWeb }));
 vi.mock('@/server/lib/http', () => ({ fetchBinary }));
-vi.mock('@/server/providers/generate', () => ({ generationProvider: () => null }));
+
+const generate = vi.fn();
+const generationProvider = vi.fn(() => null as { name: string; generate: typeof generate } | null);
+vi.mock("@/server/providers/generate", () => ({ generationProvider: () => generationProvider() }));
+
+const verifyProductImage = vi.fn();
+const verificationAvailable = vi.fn(() => false);
+vi.mock('@/server/providers/llm/verify', () => ({
+  verifyProductImage: (...args: unknown[]) => verifyProductImage(...args),
+  verificationAvailable: () => verificationAvailable(),
+}));
 vi.mock('@/server/providers/bgremove', () => ({
   backgroundRemovalMode: () => 'none',
   removeBackgroundHosted: vi.fn(),
@@ -69,6 +79,9 @@ const goodAnalysis = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  generationProvider.mockReturnValue(null);
+  verificationAvailable.mockReturnValue(false);
+  verifyProductImage.mockResolvedValue({ verdict: "unknown", shown: "", reason: "not configured" });
   // Big enough to clear the "blank or over-compressed" gate, which judges bytes
   // against the pixel count analyseImage reports.
   const jpeg = Buffer.alloc(400_000, 0x7f);
@@ -169,6 +182,104 @@ describe('cost of a barcode nothing recognises', () => {
 
     await processProduct(input);
     expect(renderProductImage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a generated image that shows the wrong product', () => {
+  beforeEach(() => {
+    // Nothing findable, so the run falls through to Workflow B.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [],
+      facts: undefined,
+      errors: [],
+      providers: [],
+    });
+    generationProvider.mockReturnValue({ name: 'openai', generate });
+    generate.mockResolvedValue({
+      buffer: Buffer.alloc(1000),
+      provider: 'openai',
+      model: 'gpt-image-1',
+    });
+  });
+
+  it('is discarded rather than filed under the barcode', async () => {
+    // The failure that started this: a body wash came back as a box of tea,
+    // correctly named and correctly labelled "AI generated". A missing image is
+    // a gap somebody fills; a confident wrong one gets sold from.
+    verifyProductImage.mockResolvedValue({
+      verdict: 'mismatch',
+      shown: 'a box of Lipton black tea',
+      reason: 'The image shows a box of Lipton black tea',
+    });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    if (outcome.status === 'failed') {
+      expect(outcome.reason).toContain('Lipton');
+    }
+    // And it never reached the renderer, so nothing was stored.
+    expect(renderProductImage).not.toHaveBeenCalled();
+  });
+
+  it('is kept when the verifier confirms it', async () => {
+    verifyProductImage.mockResolvedValue({ verdict: 'match', shown: 'body wash', reason: 'ok' });
+
+    const outcome = await processProduct(input);
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status === 'succeeded') expect(outcome.kind).toBe('AI_GENERATED');
+  });
+
+  it('is kept when the verifier cannot say, rather than failing every product', async () => {
+    // An outage in the checker must not become an outage in the product.
+    verifyProductImage.mockResolvedValue({ verdict: 'unknown', shown: '', reason: 'timeout' });
+
+    const outcome = await processProduct(input);
+    expect(outcome.status).toBe('succeeded');
+  });
+});
+
+describe('a real photo the text signals were unsure about', () => {
+  it('is rejected when the verifier says it is a different product', async () => {
+    verificationAvailable.mockReturnValue(true);
+    verifyProductImage.mockResolvedValue({
+      verdict: 'mismatch',
+      shown: 'a garden hose',
+      reason: 'The image shows a garden hose',
+    });
+    // Facts so the row resolves to a real name and the candidate clears the
+    // keyword gate, but a middling provider confidence so the match score lands
+    // between "worth downloading" and "certain" — which is the band the vision
+    // check exists for.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [candidate('weak', 0.6)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+    searchWeb.mockResolvedValue({ candidates: [], errors: [], facts: undefined });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    expect(outcome.candidates.some((c) => c.rejectedReason?.includes('garden hose'))).toBe(true);
+  });
+
+  it('is not re-checked when the barcode already matched confidently', async () => {
+    // The whole point of resolving the GTIN first is that those cases are
+    // settled; paying a vision call to re-litigate them is a second per product.
+    verificationAvailable.mockReturnValue(true);
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [candidate('upcitemdb', 0.98)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('succeeded');
+    expect(verifyProductImage).not.toHaveBeenCalled();
   });
 });
 

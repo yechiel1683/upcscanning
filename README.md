@@ -48,6 +48,20 @@ studio-quality render built from their own description. These are labelled
 `AI generated` everywhere they appear — in the dashboard, in the export CSV, in
 the report, and optionally as a badge burned into the image itself.
 
+**Nothing ships without being looked at.** Match scoring reads titles, URLs and
+barcodes — text *about* an image, never the image — and a generated image used
+to be scored against nothing at all, on the assumption that a model asked for a
+body wash returns a body wash. It does not always: one came back as a box of
+tea, correctly named and correctly labelled. So every generated image, and every
+real one the text signals were not confident about, is shown to a vision model
+and asked whether it depicts the stated product. A confident "no" discards it
+and the product is reported as failed. A missing image is a gap somebody fills;
+a confident wrong one goes into a catalog and is sold from.
+
+The check only ever *rejects*. An unreadable answer, a missing key or a provider
+outage all resolve to "unknown" and let the image through, because refusing
+every product when the verifier is down would be its own outage.
+
 **One consistent look.** Sourced and generated images go through the same
 pipeline — cutout, framing, background, contact shadow, resize, encode — so a
 catalog assembled from a dozen different websites looks like one photoshoot.

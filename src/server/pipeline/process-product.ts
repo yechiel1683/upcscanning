@@ -23,6 +23,7 @@ import {
   type EnrichmentInput,
 } from '@/server/providers/llm/enrichment';
 import { lookupBarcodeCached, searchWeb, type SearchContext } from '@/server/providers/search';
+import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
 /**
  * The per-product engine.
@@ -245,6 +246,35 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   }
 
   if (best) {
+    // A real photograph the text signals were not certain about gets looked at
+    // too. Titles, URLs and barcodes describe an image without ever seeing it,
+    // which is enough when a GTIN lookup hands back the manufacturer's own
+    // photo and much less so when a web search returns something that merely
+    // reads right. A confident match skips this: it costs a call and a second,
+    // and the whole point of the barcode-first order is that those cases are
+    // already settled.
+    if (best.matchScore < CONFIDENT_MATCH_THRESHOLD && verificationAvailable()) {
+      const check = await verifyProductImage({
+        buffer: best.source,
+        title: enrichment.canonicalTitle,
+        brand: enrichment.brand,
+        category: enrichment.category,
+      });
+      if (check.verdict === 'mismatch') {
+        const entry = evaluated.find(
+          (candidate) => candidate.candidate.sourceUrl === best!.candidate.sourceUrl,
+        );
+        if (entry) {
+          entry.rejected = true;
+          entry.rejectedReason = check.reason;
+        }
+        log.push(`Rejected ${hostOf(best.candidate.sourceUrl)}: ${check.reason}`);
+        best = null;
+      }
+    }
+  }
+
+  if (best) {
     // The one render in the whole of Workflow A.
     try {
       const prepared = await maybeHostedCutout(best.source, options, log);
@@ -319,6 +349,34 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   try {
     log.push(`Generating a product image with ${generator.name}`);
     const generated = await generator.generate({ prompt: enrichment.generationPrompt });
+
+    // Look at what came back before shipping it. An image model asked for a
+    // body wash has returned a box of tea — correctly named, correctly labelled
+    // "AI generated", and entirely the wrong product. Nothing else in the
+    // pipeline would have noticed, because a generated image is the one image
+    // never scored against anything.
+    const check = await verifyProductImage({
+      buffer: generated.buffer,
+      title: enrichment.canonicalTitle,
+      brand: enrichment.brand,
+      category: enrichment.category,
+    });
+    if (check.verdict === 'mismatch') {
+      log.push(`Discarded the generated image: ${check.reason}`);
+      return {
+        status: 'failed',
+        reason:
+          `${searchSummary} A replacement image was generated, but it came back showing ` +
+          `${check.shown || 'a different product'}, so it was discarded rather than filed ` +
+          'under this barcode.',
+        enrichment,
+        facts,
+        candidates: evaluated,
+        log,
+      };
+    }
+    if (check.verdict === 'unknown') log.push(`Generated image unverified: ${check.reason}`);
+
     const prepared = await maybeHostedCutout(generated.buffer, options, log);
 
     const render = await renderProductImage({

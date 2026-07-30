@@ -23,6 +23,13 @@ export function GET() {
     const generation = generationStatus();
 
     return ok({
+      // Which build is actually serving. Without this, "is the fix live yet?"
+      // is unanswerable from the outside, and a screenshot of an old build is
+      // indistinguishable from a fix that did not work.
+      build: {
+        commit: (process.env.RAILWAY_GIT_COMMIT_SHA ?? '').slice(0, 7) || 'unknown',
+        startedAt: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString(),
+      },
       checks: report.checks,
       keyLooksValid: report.keyLooksValid,
       capabilities: {

@@ -54,12 +54,7 @@ export interface MaskOptions {
 }
 
 /** Squared Euclidean distance in RGB, avoiding a sqrt in the inner loop. */
-function colourDistanceSq(
-  data: Uint8Array | Buffer,
-  a: number,
-  b: number,
-  channels: number,
-): number {
+function colourDistanceSq(data: Uint8Array | Buffer, a: number, b: number): number {
   const dr = (data[a] ?? 0) - (data[b] ?? 0);
   const dg = (data[a + 1] ?? 0) - (data[b + 1] ?? 0);
   const db = (data[a + 2] ?? 0) - (data[b + 2] ?? 0);
@@ -70,6 +65,19 @@ function colourDistanceSq(
  * Sample the frame border to work out the backdrop colour and how uniform it
  * is. A high variance means the photo is a lifestyle shot, not a cutout, and
  * the flood fill should not be trusted.
+ *
+ * The colour is a per-channel **median**, not a mean, and the difference
+ * matters as soon as the tolerance is tight. Listing images routinely have
+ * something running off the edge of the frame — a promotional banner, a prop,
+ * a second pack — and a mean is dragged towards it: one blue panel along the
+ * left edge moves an estimate of white thirty levels towards blue. The fill
+ * then seeds on a colour that appears nowhere in the actual backdrop, and with
+ * little tolerance to spare it cannot start at all. A median ignores anything
+ * short of half the border.
+ *
+ * The variance is still measured about that colour, so a border with a banner
+ * in it correctly reports as less uniform — which is the signal the overlay
+ * pass exists to act on.
  */
 export function analyseBorder(
   data: Uint8Array | Buffer,
@@ -77,20 +85,17 @@ export function analyseBorder(
   height: number,
   channels: number,
 ): { r: number; g: number; b: number; variance: number } {
-  let sumR = 0;
-  let sumG = 0;
-  let sumB = 0;
   let count = 0;
   const samples: number[] = [];
+  const reds: number[] = [];
+  const greens: number[] = [];
+  const blues: number[] = [];
 
   const push = (x: number, y: number) => {
     const index = (y * width + x) * channels;
-    const r = data[index] ?? 0;
-    const g = data[index + 1] ?? 0;
-    const b = data[index + 2] ?? 0;
-    sumR += r;
-    sumG += g;
-    sumB += b;
+    reds.push(data[index] ?? 0);
+    greens.push(data[index + 1] ?? 0);
+    blues.push(data[index + 2] ?? 0);
     samples.push(index);
     count += 1;
   };
@@ -109,20 +114,33 @@ export function analyseBorder(
 
   if (count === 0) return { r: 255, g: 255, b: 255, variance: 0 };
 
-  const meanR = sumR / count;
-  const meanG = sumG / count;
-  const meanB = sumB / count;
+  const median = (values: number[]): number => {
+    values.sort((a, b) => a - b);
+    const middle = values.length >> 1;
+    return values.length % 2 === 0
+      ? (values[middle - 1]! + values[middle]!) / 2
+      : values[middle]!;
+  };
+
+  const centreR = median(reds);
+  const centreG = median(greens);
+  const centreB = median(blues);
 
   let variance = 0;
   for (const index of samples) {
-    const dr = (data[index] ?? 0) - meanR;
-    const dg = (data[index + 1] ?? 0) - meanG;
-    const db = (data[index + 2] ?? 0) - meanB;
+    const dr = (data[index] ?? 0) - centreR;
+    const dg = (data[index + 1] ?? 0) - centreG;
+    const db = (data[index + 2] ?? 0) - centreB;
     variance += (dr * dr + dg * dg + db * db) / 3;
   }
   variance /= count;
 
-  return { r: Math.round(meanR), g: Math.round(meanG), b: Math.round(meanB), variance };
+  return {
+    r: Math.round(centreR),
+    g: Math.round(centreG),
+    b: Math.round(centreB),
+    variance,
+  };
 }
 
 /**
@@ -141,9 +159,16 @@ export function analyseBorder(
  * answer to "how big is the thing in this picture", which can then be compared
  * with what the fill decided to keep.
  *
- * A row or column counts only when several of its pixels carry an edge, so
- * sensor noise and a stray compression artefact cannot stretch the result.
+ * Measured on a box-averaged copy at a quarter scale, which is the difference
+ * between this working and not. Grain is what an edge detector sees most of: a
+ * JPEG's noise puts a small edge on nearly every pixel, so no per-pixel
+ * threshold and no minimum count per row can separate grain from structure —
+ * grain is present on every row. Averaging sixteen pixels into one divides the
+ * noise by four and leaves a product's outline untouched. It is also cheaper
+ * than scanning at full size.
  */
+const INK_SCALE = 4;
+
 export function measureInkBounds(
   data: Uint8Array | Buffer,
   width: number,
@@ -151,24 +176,50 @@ export function measureInkBounds(
   channels: number,
   minEdge = 5,
 ): { left: number; top: number; width: number; height: number } | null {
-  if (width < 2 || height < 2) return null;
+  if (width < INK_SCALE * 2 || height < INK_SCALE * 2) return null;
 
-  const rowCounts = new Int32Array(height);
-  const columnCounts = new Int32Array(width);
+  const w = Math.floor(width / INK_SCALE);
+  const h = Math.floor(height / INK_SCALE);
+  const small = new Int32Array(w * h * 3);
 
-  const differs = (a: number, b: number): boolean => {
-    const dr = Math.abs((data[a] ?? 0) - (data[b] ?? 0));
-    const dg = Math.abs((data[a + 1] ?? 0) - (data[b + 1] ?? 0));
-    const db = Math.abs((data[a + 2] ?? 0) - (data[b + 2] ?? 0));
-    return Math.max(dr, dg, db) >= minEdge;
-  };
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      for (let dy = 0; dy < INK_SCALE; dy += 1) {
+        const row = (y * INK_SCALE + dy) * width;
+        for (let dx = 0; dx < INK_SCALE; dx += 1) {
+          const index = (row + x * INK_SCALE + dx) * channels;
+          r += data[index] ?? 0;
+          g += data[index + 1] ?? 0;
+          b += data[index + 2] ?? 0;
+        }
+      }
+      const out = (y * w + x) * 3;
+      const n = INK_SCALE * INK_SCALE;
+      small[out] = r / n;
+      small[out + 1] = g / n;
+      small[out + 2] = b / n;
+    }
+  }
 
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const pixel = y * width + x;
-      const base = pixel * channels;
-      const right = x + 1 < width && differs(base, (pixel + 1) * channels);
-      const down = y + 1 < height && differs(base, (pixel + width) * channels);
+  const rowCounts = new Int32Array(h);
+  const columnCounts = new Int32Array(w);
+
+  const differs = (a: number, b: number): boolean =>
+    Math.max(
+      Math.abs(small[a]! - small[b]!),
+      Math.abs(small[a + 1]! - small[b + 1]!),
+      Math.abs(small[a + 2]! - small[b + 2]!),
+    ) >= minEdge;
+
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const pixel = y * w + x;
+      const base = pixel * 3;
+      const right = x + 1 < w && differs(base, (pixel + 1) * 3);
+      const down = y + 1 < h && differs(base, (pixel + w) * 3);
       if (right || down) {
         rowCounts[y] = (rowCounts[y] ?? 0) + 1;
         columnCounts[x] = (columnCounts[x] ?? 0) + 1;
@@ -179,21 +230,29 @@ export function measureInkBounds(
   const MIN_PER_LINE = 2;
   let top = -1;
   let bottom = -1;
-  for (let y = 0; y < height; y += 1) {
+  for (let y = 0; y < h; y += 1) {
     if (rowCounts[y]! < MIN_PER_LINE) continue;
     if (top < 0) top = y;
     bottom = y;
   }
   let left = -1;
   let right = -1;
-  for (let x = 0; x < width; x += 1) {
+  for (let x = 0; x < w; x += 1) {
     if (columnCounts[x]! < MIN_PER_LINE) continue;
     if (left < 0) left = x;
     right = x;
   }
-
   if (top < 0 || left < 0) return null;
-  return { left, top, width: right - left + 1, height: bottom - top + 1 };
+
+  // Back to full-resolution coordinates, rounded outward.
+  const scaledLeft = left * INK_SCALE;
+  const scaledTop = top * INK_SCALE;
+  return {
+    left: scaledLeft,
+    top: scaledTop,
+    width: Math.min(width - scaledLeft, (right - left + 2) * INK_SCALE),
+    height: Math.min(height - scaledTop, (bottom - top + 2) * INK_SCALE),
+  };
 }
 
 /**
@@ -213,7 +272,22 @@ export function buildForegroundMask(
 
   // A busy border means there is no backdrop to remove.
   const borderIsUniform = border.variance < 900;
-  const tolerance = options.tolerance ?? (border.variance < 120 ? 26 : 38);
+  /**
+   * Deliberately tight.
+   *
+   * This was 26 — anything within 26 levels of the backdrop counted as
+   * backdrop — which is generous enough to swallow a product. A grey bottle
+   * twenty levels off white is not a subtle case; it is an ordinary one, and it
+   * was being absorbed before the fill had to creep anywhere.
+   *
+   * Scored against known silhouettes across nine fixtures, mean intersection
+   * over union runs 0.68 at a tolerance of 26 and 0.86 at 8, and the
+   * well-separated products — dark, blue, red, mid-grey — sit at 0.97 either
+   * way. So the generosity bought nothing except the ability to destroy pale
+   * products. A backdrop uniform enough to flood-fill needs very little
+   * latitude; one that is not uniform gets more, and is separately distrusted.
+   */
+  const tolerance = options.tolerance ?? (border.variance < 120 ? 8 : 18);
   const toleranceSq = tolerance * tolerance * 3;
 
   // Iterative fill with an explicit stack; recursion would blow up on 4K images.
@@ -249,8 +323,37 @@ export function buildForegroundMask(
   }
 
   // Local tolerance keeps gradient backdrops (very common in studio shots)
-  // from stopping the fill halfway.
+  // from stopping the fill halfway: each step only has to resemble the step
+  // before it, so a slow sweep from white to grey is followed all the way.
   const localToleranceSq = Math.max(toleranceSq * 0.45, 300);
+
+  // ...but only while the fill stays recognisably the backdrop.
+  //
+  // Step-to-step similarity alone is a licence to walk anywhere, one small step
+  // at a time, and a photographed edge is exactly the ramp it needs. Any image
+  // that has been JPEG-compressed or resized — which is every image an image
+  // search returns — has edges several pixels wide, so a mid-grey bottle
+  // seventy levels off a white backdrop is crossed in eight steps of nine. The
+  // fill then empties the product from the inside and leaves its logo, and
+  // every mask-shaped signal still looks healthy because what remains is small,
+  // compact and plausible.
+  //
+  // Measured on the fixture matrix, an ordinary grey bottle came back with 0.3%
+  // of its own bounding box filled. That is the bug behind every washed-out
+  // render: not a bad cutout, a deleted product.
+  //
+  // Bounding the total drift keeps the property the creep was added for — a
+  // studio sweep stays near the backdrop's own colour throughout — while
+  // refusing the march into something genuinely a different colour.
+  const driftToleranceSq = (tolerance + 8) ** 2 * 3;
+  const withinDrift = (pixel: number): boolean => {
+    const index = pixel * channels;
+    const dr = (data[index] ?? 0) - seedColour.r;
+    const dg = (data[index + 1] ?? 0) - seedColour.g;
+    const db = (data[index + 2] ?? 0) - seedColour.b;
+    return dr * dr + dg * dg + db * db <= driftToleranceSq;
+  };
+
   let backgroundCount = 0;
 
   while (stackSize > 0) {
@@ -270,7 +373,8 @@ export function buildForegroundMask(
       const neighbourIndex = neighbour * channels;
       const closeToSeed = matchesBackground(neighbour);
       const closeToNeighbour =
-        colourDistanceSq(data, base, neighbourIndex, channels) <= localToleranceSq;
+        colourDistanceSq(data, base, neighbourIndex) <= localToleranceSq &&
+        withinDrift(neighbour);
       if (!closeToSeed && !closeToNeighbour) return;
       visited[neighbour] = 1;
       stack[stackSize] = neighbour;
@@ -312,7 +416,14 @@ export function buildForegroundMask(
       ? options.inkBounds
       : measureInkBounds(data, width, height, channels);
 
-  const fillLeaked = detectLeak(bounds, inkBounds);
+  const fillLeaked = detectLeak({
+    mask,
+    width,
+    height,
+    bounds,
+    inkBounds,
+    foregroundCount: total - backgroundCount,
+  });
 
   return {
     mask,
@@ -335,27 +446,152 @@ export function buildForegroundMask(
   };
 }
 
+/** Above this share of its own bounding box, a mask is solid enough to trust. */
+const OBVIOUSLY_SOLID = 0.8;
+
+/** Below this, the shapes the fill kept are ragged rather than whole. */
+const SHAPES_ARE_WHOLE = 0.75;
+
 /**
  * Did the fill eat the product?
  *
- * A pale product on a pale backdrop is absorbed by any tolerance worth using,
- * and what comes back is a mask of its label — compact, plausible, and scoring
- * well on every other signal available. The giveaway is that the picture still
- * has structure well outside it: a silhouette, a shoulder, a shadow.
+ * There are two ways it happens and they look nothing alike, so both are asked
+ * about. Either way the answer is the same: this image cannot be segmented by
+ * colour, so keep the original backdrop. A real photograph with its own
+ * background beats a cutout with the product removed.
  *
- * When the fill kept only a fraction of what the frame visibly contains, the
- * honest answer is that this image cannot be segmented by colour and the caller
- * should keep the original backdrop. A real photograph with its own background
- * beats a cutout of a bottle's label with the bottle deleted.
+ *  1. **Extent.** The fill kept a compact blob — a bottle's label — while the
+ *     picture still has structure far outside it. Every mask-shaped signal
+ *     looks healthy here, because a label is a perfectly plausible product.
+ *
+ *  2. **Coherence.** The fill invaded the subject but did not finish, leaving
+ *     islands scattered across its full extent: a logo here, a dark graphic
+ *     there. The bounding box is then correct and only the *contents* are
+ *     wrong, which is what defeats the extent check. Rendered, this is the
+ *     washed-out ghost — high-contrast fragments floating where a product was.
+ *
+ * The second test costs a pass over the mask, so it runs only when density
+ * already looks wrong. On the fixtures every genuine product silhouette came
+ * back as a single component holding all of its foreground, against 0.40 in
+ * three pieces for a ghost, so the margin is wide and the fast path is the
+ * common one.
  */
-function detectLeak(
-  bounds: MaskResult['bounds'],
-  inkBounds: MaskResult['bounds'],
-): boolean {
-  if (!bounds || !inkBounds) return false;
-  const inkArea = inkBounds.width * inkBounds.height;
-  if (inkArea <= 0) return false;
-  return (bounds.width * bounds.height) / inkArea < 0.5;
+function detectLeak(input: {
+  mask: Uint8Array;
+  width: number;
+  height: number;
+  bounds: MaskResult['bounds'];
+  inkBounds: MaskResult['bounds'];
+  foregroundCount: number;
+}): boolean {
+  const { bounds, inkBounds } = input;
+  if (!bounds) return false;
+
+  if (inkBounds) {
+    const inkArea = inkBounds.width * inkBounds.height;
+    if (inkArea > 0 && (bounds.width * bounds.height) / inkArea < 0.5) return true;
+
+    // Density against the whole ink rectangle was tried here and removed. It
+    // measures segmentation quality remarkably well on a single subject — it
+    // tracked true intersection-over-union almost one to one across the
+    // fixtures — but a rectangle drawn around *two* subjects also contains the
+    // backdrop between them, so every listing image with a banner beside the
+    // product read as a leak. The per-shape version below keeps the accuracy and
+    // loses the blind spot.
+  }
+
+  const boxArea = bounds.width * bounds.height;
+  if (boxArea <= 0) return false;
+  // Already one solid block filling its own box: nothing to investigate, and
+  // this is the common case, so it skips the pass below.
+  if (input.foregroundCount / boxArea >= OBVIOUSLY_SOLID) return false;
+
+  return (
+    shapeSolidity(input.mask, input.width, input.height, input.foregroundCount) < SHAPES_ARE_WHOLE
+  );
+}
+
+/**
+ * How completely the shapes the fill kept fill their own outlines.
+ *
+ * Each connected region is measured against its *own* bounding box, and the
+ * results pooled by area. That last detail is the point: judging the whole mask
+ * against one rectangle spanning everything counts the backdrop between two
+ * subjects as a hole, so a product standing beside a promotional banner scores
+ * as badly as a product with bites out of it. Per shape, a banner is a solid
+ * rectangle, a bottle is a solid bottle, and the gap between them is nobody's
+ * hole.
+ *
+ * What this does catch is the shape that is genuinely ragged — the pale product
+ * the fill invaded and half-emptied, whose outline is right and whose interior
+ * is missing. On the fixtures that lands near 0.6 against 0.9 for a clean
+ * silhouette, and it tracks true intersection-over-union closely enough to use
+ * as a stand-in for it on images where no ground truth exists.
+ *
+ * Regions below a percent of the foreground are ignored as speckle.
+ */
+function shapeSolidity(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  foregroundCount: number,
+): number {
+  if (foregroundCount <= 0) return 0;
+  const total = width * height;
+  const seen = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  const minArea = foregroundCount * 0.01;
+
+  let areaSum = 0;
+  let boxSum = 0;
+
+  for (let start = 0; start < total; start += 1) {
+    if (mask[start] !== 255 || seen[start]) continue;
+
+    let head = 0;
+    let tail = 0;
+    let area = 0;
+    let minX = width;
+    let maxX = -1;
+    let minY = height;
+    let maxY = -1;
+
+    queue[tail] = start;
+    tail += 1;
+    seen[start] = 1;
+
+    while (head < tail) {
+      const pixel = queue[head]!;
+      head += 1;
+      area += 1;
+      const x = pixel % width;
+      const y = (pixel / width) | 0;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+
+      const visit = (nx: number, ny: number) => {
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+        const neighbour = ny * width + nx;
+        if (mask[neighbour] !== 255 || seen[neighbour]) return;
+        seen[neighbour] = 1;
+        queue[tail] = neighbour;
+        tail += 1;
+      };
+
+      visit(x - 1, y);
+      visit(x + 1, y);
+      visit(x, y - 1);
+      visit(x, y + 1);
+    }
+
+    if (area < minArea) continue;
+    areaSum += area;
+    boxSum += (maxX - minX + 1) * (maxY - minY + 1);
+  }
+
+  return boxSum > 0 ? areaSum / boxSum : 0;
 }
 
 function scoreMask(input: {

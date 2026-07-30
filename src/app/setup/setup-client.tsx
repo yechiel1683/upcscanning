@@ -24,6 +24,7 @@ interface SetupCheck {
 }
 
 interface Diagnostics {
+  build?: { commit: string; startedAt: string };
   checks: SetupCheck[];
   keyLooksValid: boolean;
   capabilities: {
@@ -123,6 +124,12 @@ export function SetupClient() {
             Re-check
           </Button>
         </div>
+        {data.build ? (
+          <p className="border-t border-line-soft px-4 py-2.5 font-mono text-xs text-subtle">
+            build {data.build.commit} · running since{' '}
+            {new Date(data.build.startedAt).toLocaleString()}
+          </p>
+        ) : null}
       </Card>
 
       <div className="space-y-3">

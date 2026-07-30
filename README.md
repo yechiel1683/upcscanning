@@ -294,20 +294,50 @@ the frame, it reports low confidence and the pipeline **keeps the original
 background** rather than punching a hole through the product. `remove.bg` is
 available for the hard cases (soft edges, hair, glass, lifestyle shots).
 
-There is one failure a colour-based fill cannot see for itself: a **pale product
-on a pale backdrop**. A white bottle on a white sweep is absorbed by any
-tolerance worth using, and what comes back is a mask of its *label* — compact,
-plausible, and scoring well on every signal a mask can offer. Rendered, that
-deletes the product and leaves its graphics floating in space.
+Two properties of that fill were wrong for real photographs, and together they
+were destroying products rather than cutting them out.
 
-So the frame is also measured for structure — where neighbouring pixels differ
-at all. A white bottle still has a silhouette, a shoulder, a shadow. When the
-fill has kept only a fraction of what the picture visibly contains, the fill is
-judged to have leaked, the cutout is declined, and the original photograph is
-kept. A real photo on its own background beats a cutout with the product
-removed. Trimming is held back on the same images for the same reason: it is the
-same judgement made cruder, and a threshold that tidies a margin will eat a
-bottle that is six levels off white.
+**The tolerance was far too generous.** Anything within 26 levels of the
+backdrop counted as backdrop, which is enough to swallow a pale grey bottle
+whole. Scored against known silhouettes across nine fixtures, mean intersection
+over union runs 0.68 at a tolerance of 26 and 0.86 at 8 — and the
+well-separated products, dark and blue and red, sit at 0.97 either way. The
+generosity bought nothing except the ability to erase pale products.
+
+**Step-to-step similarity was a licence to walk anywhere.** The fill also
+absorbed any pixel resembling the one before it, so that gradient backdrops
+would be followed all the way. But a photographed edge is exactly the ramp that
+rule needs: every image an image search returns has been JPEG-compressed and
+resized, so its edges are several pixels wide, and an ordinary grey bottle
+seventy levels off white was crossed in eight steps of nine. Drift from the
+backdrop's own colour is now bounded, which keeps gradient sweeps working and
+refuses the march into something genuinely a different colour.
+
+The backdrop colour is a per-channel **median** rather than a mean, which
+matters as soon as the tolerance is tight: listing images routinely have a
+banner or a prop running off the frame edge, and a mean is dragged towards it
+until the fill seeds on a colour present nowhere in the picture.
+
+Even so, some images cannot be segmented by colour at all — a white bottle on a
+white sweep. Two checks catch that, and both ask about the product rather than
+about the mask, because every mask-shaped signal looks healthy when the thing
+that remains is a bottle's label:
+
+- **Extent.** The frame is measured for structure — where neighbouring pixels
+  differ at all, on a quarter-scale average so that grain does not read as
+  structure. A white bottle still has a silhouette and a shadow. When the fill
+  kept a compact blob of a much larger subject, it removed the product.
+- **Shape.** Each region the fill kept is measured against its *own* bounding
+  box. A pale product invaded unevenly comes back as an outline with its
+  interior missing, which scores near 0.6 against 0.9 for a clean silhouette.
+  Per shape rather than overall, because a rectangle spanning a product *and* a
+  banner beside it counts the gap between them as a hole.
+
+When either fires, the cutout is declined and the original photograph kept. A
+real photo on its own background beats a cutout with the product removed.
+Trimming is held back on the same images for the same reason: it is the same
+judgement made cruder, and a threshold that tidies a margin will eat a bottle
+six levels off white.
 
 ### Promotional overlays
 

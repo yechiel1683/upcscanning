@@ -377,6 +377,191 @@ describe('renderProductImage', () => {
     expect(subjectWidth / subjectHeight).toBeLessThan(0.75);
   });
 
+  it('keeps an ordinary grey product whole, soft edges and all', async () => {
+    // The bug this guards produced every washed-out render, and it was not a
+    // pale-product edge case: a mid-grey bottle seventy levels off a white
+    // backdrop was emptied from the inside, leaving 0.3% of its own bounding box
+    // filled. Two things caused it. The base tolerance treated anything within
+    // 26 levels of the backdrop as backdrop, and the neighbour-similarity rule
+    // then let the fill walk across a soft edge one small step at a time. Soft
+    // edges are universal — every image an image search returns has been
+    // JPEG-compressed and resized — so the blur here is the realistic case, not
+    // an adversarial one.
+    const size = 600;
+    const pixels = Buffer.alloc(size * size * 3, 252);
+    for (let y = 120; y < 500; y += 1) {
+      for (let x = 200; x < 400; x += 1) {
+        const across = (x - 200) / 200;
+        const shade = 0.78 + Math.sin(across * Math.PI) * 0.24;
+        const index = (y * size + x) * 3;
+        pixels[index] = 180 * shade;
+        pixels[index + 1] = 184 * shade;
+        pixels[index + 2] = 192 * shade;
+      }
+    }
+    const source = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } })
+      .blur(4)
+      .png()
+      .toBuffer();
+
+    const result = await renderProductImage({ buffer: source, options });
+    expect(result.metrics.backgroundRemoved).toBe(true);
+
+    // The bottle is 200x380, so 0.53 wide-to-tall. Hollowed out, what survived
+    // was a fragment nothing like that shape.
+    const { data, info } = await sharp(result.buffer)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    let minX = info.width;
+    let maxX = -1;
+    let minY = info.height;
+    let maxY = -1;
+    let subject = 0;
+    for (let y = 0; y < info.height; y += 1) {
+      for (let x = 0; x < info.width; x += 1) {
+        const base = (y * info.width + x) * info.channels;
+        if (data[base]! < 240) {
+          subject += 1;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    const boxWidth = maxX - minX + 1;
+    const boxHeight = maxY - minY + 1;
+    expect(boxWidth / boxHeight).toBeGreaterThan(0.35);
+    expect(boxWidth / boxHeight).toBeLessThan(0.75);
+    // And it is solid, not a hollow outline: a filled bottle covers most of its
+    // own box, where a half-emptied one covered almost none of it.
+    expect(subject / (boxWidth * boxHeight)).toBeGreaterThan(0.7);
+  });
+
+  it('cuts out a pale product without hollowing it', async () => {
+    // Twenty levels off the backdrop, which the old tolerance of 26 classified
+    // as backdrop outright — before the fill had to creep anywhere. Scored
+    // against known silhouettes, this case came out 0.52 accurate at a tolerance
+    // of 26 and 0.85 at 8, while the well-separated products scored 0.97 either
+    // way. The generosity only ever bought the ability to erase pale products.
+    const size = 600;
+    const pixels = Buffer.alloc(size * size * 3, 252);
+    for (let y = 120; y < 500; y += 1) {
+      for (let x = 220; x < 380; x += 1) {
+        const index = (y * size + x) * 3;
+        pixels[index] = 232;
+        pixels[index + 1] = 234;
+        pixels[index + 2] = 238;
+      }
+    }
+    const source = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } })
+      .blur(3)
+      .png()
+      .toBuffer();
+
+    const mask = buildForegroundMask(
+      (await rawOf(source)).data,
+      size,
+      size,
+      { channels: 3 },
+    );
+
+    expect(mask.fillLeaked).toBe(false);
+    expect(mask.bounds).not.toBeNull();
+    // The whole bar, not a remnant of it: 160x380 of a 600x600 frame.
+    expect(mask.bounds!.width).toBeGreaterThan(140);
+    expect(mask.bounds!.height).toBeGreaterThan(340);
+  });
+
+  it('declines rather than half-emptying a product it cannot separate', async () => {
+    // Eight levels off the backdrop. Nothing can segment this, and the failure
+    // mode without the shape check is not a clean refusal but a silhouette with
+    // its middle missing — the washed-out ghost.
+    // Shaped and shaded like a real bottle, because the shape of the damage is
+    // what the check reads: a curved, tapered body invaded unevenly leaves an
+    // outline whose interior is missing, where a flat slab would simply shrink.
+    const size = 600;
+    const pixels = Buffer.alloc(size * size * 3, 252);
+    const top = 120;
+    const bottom = 500;
+    for (let y = top; y < bottom; y += 1) {
+      const down = (y - top) / (bottom - top);
+      const half = 80 * Math.min(1, down < 0.12 ? 0.55 + down * 3.75 : 1);
+      for (let x = Math.ceil(300 - half); x < 300 + half; x += 1) {
+        // Curvature shading across the body. The amount matters: a barely
+        // shaded slab is invaded uniformly and merely shrinks, where a rounded
+        // body is invaded unevenly and comes back as an outline with its
+        // interior gone. The latter is what the shape check reads, and what a
+        // real bottle looks like.
+        const across = (x - (300 - half)) / (half * 2);
+        const shade = 0.78 + Math.sin(across * Math.PI) * 0.24;
+        const index = (y * size + x) * 3;
+        pixels[index] = 244 * shade;
+        pixels[index + 1] = 245 * shade;
+        pixels[index + 2] = 248 * shade;
+      }
+    }
+    // A saturated logo, so there is always *something* for the fill to keep and
+    // the mask never comes back empty.
+    for (let y = 200; y < 250; y += 1) {
+      for (let x = 265; x < 335; x += 1) {
+        const index = (y * size + x) * 3;
+        pixels[index] = 20;
+        pixels[index + 1] = 80;
+        pixels[index + 2] = 170;
+      }
+    }
+    const source = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } })
+      .blur(3)
+      .png()
+      .toBuffer();
+
+    const result = await renderProductImage({ buffer: source, options });
+    expect(result.metrics.backgroundRemoved).toBe(false);
+  });
+
+  it('finds the backdrop even when a banner runs off the edge of the frame', async () => {
+    // The backdrop colour used to be the mean of the border, which one coloured
+    // panel touching an edge drags away from white. With a tight tolerance the
+    // fill then seeds on a colour present nowhere in the picture and cannot
+    // start, so nothing is removed at all.
+    const size = 600;
+    const pixels = Buffer.alloc(size * size * 3, 255);
+    // Blue panel down the left edge — a fifth of the border.
+    for (let y = 150; y < 450; y += 1) {
+      for (let x = 0; x < 120; x += 1) {
+        const index = (y * size + x) * 3;
+        pixels[index] = 22;
+        pixels[index + 1] = 58;
+        pixels[index + 2] = 148;
+      }
+    }
+    // Dark product to the right of it.
+    for (let y = 140; y < 480; y += 1) {
+      for (let x = 320; x < 460; x += 1) {
+        const index = (y * size + x) * 3;
+        pixels[index] = 110;
+        pixels[index + 1] = 116;
+        pixels[index + 2] = 130;
+      }
+    }
+
+    const border = analyseBorder(pixels, size, size, 3);
+    // White, not dragged a third of the way to blue.
+    expect(border.r).toBeGreaterThan(240);
+    expect(border.b).toBeGreaterThan(240);
+
+    const mask = buildForegroundMask(pixels, size, size, { channels: 3 });
+    expect(mask.fillLeaked).toBe(false);
+    // Both the panel and the product survive as foreground; the overlay pass is
+    // what separates them later.
+    expect(mask.foregroundRatio).toBeGreaterThan(0.1);
+    expect(mask.foregroundRatio).toBeLessThan(0.5);
+  });
+
   it('falls back to PNG when transparency is requested with a JPEG format', async () => {
     const conflicting: RenderOptions = { ...options, background: 'transparent', format: 'jpeg' };
     const result = await renderProductImage({ buffer: await studioPhoto(), options: conflicting });

@@ -375,7 +375,10 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
   if (!options.allowAiGeneration) {
     return {
       status: 'failed',
-      reason: `${searchSummary} AI generation is turned off for this batch.`,
+      reason:
+        `${searchSummary} No image was invented to fill the gap, because an ` +
+        'invented one would not be this product. Turn on AI generation for the ' +
+        'batch if a representative picture is better than an empty cell.',
       enrichment,
       facts,
       candidates: evaluated,
@@ -412,8 +415,9 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       title: enrichment.canonicalTitle,
       brand: enrichment.brand,
       category: enrichment.category,
+      strict: true,
     });
-    if (check.verdict === 'mismatch') {
+    if (check.verdict === "mismatch") {
       log.push(`Discarded the generated image: ${check.reason}`);
       return {
         status: 'failed',

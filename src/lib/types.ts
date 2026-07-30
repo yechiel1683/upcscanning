@@ -78,8 +78,22 @@ export const renderOptionsSchema = z.object({
   removeBackground: z.boolean().default(true),
   /** Add a soft contact shadow beneath the product. */
   dropShadow: z.boolean().default(true),
-  /** Allow Workflow B when no real image can be found. */
-  allowAiGeneration: z.boolean().default(true),
+  /**
+   * Allow Workflow B when no real image can be found. Off by default.
+   *
+   * An image model does not know what a particular branded product looks like.
+   * Asked for one it invents a plausible container — a blank-labelled bottle,
+   * sometimes with the barcode number printed across it — which is not that
+   * product and never will be. Three such images went into a catalog beside
+   * three real photographs, indistinguishable at a glance apart from a small
+   * badge, and there is no version of that which is worth having.
+   *
+   * Generation earns its place only where a representative picture is genuinely
+   * better than an empty cell, and that is a decision for whoever is filling
+   * the catalog — not a default. The default is the real photograph or an
+   * honest gap.
+   */
+  allowAiGeneration: z.boolean().default(false),
   /** Stamp AI-generated images with a small corner badge. */
   watermarkAiImages: z.boolean().default(false),
 });

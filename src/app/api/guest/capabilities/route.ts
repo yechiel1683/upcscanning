@@ -27,8 +27,10 @@ export function GET() {
       webSearch: { enabled: web.length > 0, providers: web.map((p) => p.name) },
       generation: { enabled: generation.enabled, provider: generation.provider },
       identification: understanding.provider,
-      // The single fact that decides whether this instance is fully set up.
-      fullyConfigured: web.length > 0 && generation.enabled,
+      // Web image search is what decides this now. Generation used to count,
+      // but it is opt-in and is not a fallback for finding the real product —
+      // an invented bottle is not the thing on the shelf.
+      fullyConfigured: web.length > 0,
     });
   } catch (error) {
     return handleError(error);

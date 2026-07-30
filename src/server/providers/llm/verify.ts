@@ -39,6 +39,8 @@ export interface VerificationInput {
   title: string;
   brand?: string | null;
   category?: string | null;
+  /** Hold an invented image to the harder standard. See STRICT_SYSTEM_PROMPT. */
+  strict?: boolean;
 }
 
 /** Enough pixels to recognise a product, few enough to be nearly free. */
@@ -60,6 +62,37 @@ Judge the product category and identity, not photographic quality, packaging
 variation, or a different flavour, scent, size or count of the same product —
 those count as depicting it. A different kind of product entirely does not.
 If the image is too unclear to tell, set depicts to true and confidence below 0.5.`;
+
+/**
+ * The bar for an invented image, which is a different question.
+ *
+ * A real photograph found for a stated product is either that product or
+ * something else, and "a body wash" is a reasonable answer. An image model
+ * asked for a body wash will always return something that is recognisably a
+ * body wash — a blank-labelled bottle, a generic pump dispenser, occasionally
+ * one with the barcode number printed across the front — and passing those is
+ * exactly how a catalog fills up with containers that are not anyone's product.
+ *
+ * So a generated image is asked the harder question: is this recognisably the
+ * *stated brand's* product, rather than a plausible member of its category.
+ */
+const STRICT_SYSTEM_PROMPT = `You check whether a generated product image is usable as a catalog photograph of a specific named product.
+
+Respond with a single JSON object and nothing else:
+{
+  "shown": string,      // what the image actually shows, in a few words
+  "depicts": boolean,   // see below
+  "confidence": number  // 0 to 1
+}
+
+Set depicts to false, with high confidence, when any of these is true:
+- the packaging is blank, unbranded, or carries invented or placeholder text
+- it shows a generic container of the right category rather than the named product
+- the stated product has a well-known brand and its branding is absent or wrong
+- any digits, codes or filler text appear on the packaging that would not be on the real product
+
+Set depicts to true only when the image is recognisably the named brand's
+product. Being the right category is not enough.`;
 
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
@@ -103,7 +136,7 @@ export async function verifyProductImage(
       body: JSON.stringify({
         model: config.OPENAI_TEXT_MODEL,
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'system', content: input.strict ? STRICT_SYSTEM_PROMPT : SYSTEM_PROMPT },
           {
             role: 'user',
             content: [
@@ -125,7 +158,7 @@ export async function verifyProductImage(
       return { verdict: 'unknown', shown: '', reason: data.error.message };
     }
 
-    return interpret(data.choices?.[0]?.message?.content ?? '');
+    return interpret(data.choices?.[0]?.message?.content ?? '', input.strict ?? false);
   } catch (error) {
     return {
       verdict: 'unknown',
@@ -142,7 +175,7 @@ export async function verifyProductImage(
  * without a network, including the shapes a model returns when it is having a
  * bad day.
  */
-export function interpret(raw: string): VerificationResult {
+export function interpret(raw: string, strict = false): VerificationResult {
   let parsed: { shown?: unknown; depicts?: unknown; confidence?: unknown };
   try {
     parsed = JSON.parse(raw) as typeof parsed;
@@ -165,7 +198,10 @@ export function interpret(raw: string): VerificationResult {
   // A rejection has to be a confident one. An uncertain "no" from a model
   // looking at a blurry thumbnail is not grounds for discarding a real
   // photograph of the right thing.
-  if (confidence < MIN_CONFIDENCE) {
+  // An uncertain "no" about a *found* photograph is not grounds for discarding
+  // it. About an *invented* one it is: there was nothing to lose in the first
+  // place, and the cost of being wrong runs entirely one way.
+  if (!strict && confidence < MIN_CONFIDENCE) {
     return { verdict: 'unknown', shown, reason: 'Verifier was not confident enough to reject' };
   }
 

@@ -43,10 +43,20 @@ barcode databases, retailer listings, and manufacturer catalogs. Every candidate
 is scored twice: *is this the right product* and *is this a usable photograph*.
 Only a candidate that passes both is used.
 
-**Workflow B — generate one.** Products with no findable photograph get a
-studio-quality render built from their own description. These are labelled
-`AI generated` everywhere they appear — in the dashboard, in the export CSV, in
-the report, and optionally as a badge burned into the image itself.
+**Workflow B — generate one. Off by default.** An image model does not know
+what a particular branded product looks like. Asked for one it invents a
+plausible container — a blank-labelled bottle, sometimes with the barcode
+number printed across it — which is not that product and never will be. Three
+of those went into a catalog beside three real photographs, told apart only by
+a small badge.
+
+So a product with no findable photograph is reported as failed, and the cell
+stays empty. Generation is a per-batch option for the case where a
+representative picture genuinely beats a gap; when it is on, output is labelled
+`AI generated` everywhere it appears — dashboard, export CSV, report, and
+optionally a badge burned into the image — and is held to a harder standard
+than a found photograph: recognisably the named brand's product, not merely
+something in the right category.
 
 **Nothing ships without being looked at.** Match scoring reads titles, URLs and
 barcodes — text *about* an image, never the image — and a generated image used

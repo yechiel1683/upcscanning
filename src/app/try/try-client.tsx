@@ -210,14 +210,12 @@ export function TryClient() {
               This instance is only partly set up
             </p>
             <p className="mt-1.5 text-sm leading-relaxed text-muted">
-              {caps.webSearch.enabled
-                ? 'Web image search is on, but there is no fallback for products with no photo anywhere.'
-                : `Only ${caps.barcodeLookup.count} free barcode database(s) can find images. Products those do not carry will fail, and there is no fallback.`}{' '}
+              {`Only ${caps.barcodeLookup.count} free barcode database(s) can look for photographs, so products they do not carry will come back empty.`}{' '}
               Set{' '}
               <code className="rounded bg-surface-2 px-1 py-0.5 font-mono text-xs text-fg">
                 OPENAI_API_KEY
               </code>{' '}
-              on the server to turn on web image search and generated images.
+              on the server to search the open web as well.
             </p>
             {/* Setting the variable and still seeing this banner is the loop the
                 setup page exists to break, so it has to be reachable from here. */}

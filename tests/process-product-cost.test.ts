@@ -258,6 +258,32 @@ describe('weighing several candidates', () => {
   });
 });
 
+/** Generation is opt-in now, so these have to ask for it. */
+const generating = {
+  ...input,
+  options: { ...DEFAULT_RENDER_OPTIONS, allowAiGeneration: true },
+};
+
+describe('inventing an image is opt-in', () => {
+  it('is off by default, because an invented image is not the product', async () => {
+    // Three generic bottles — one with the barcode printed across it — went
+    // into a catalog beside three real photographs, told apart only by a small
+    // badge. An empty cell is the better of those two outcomes.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [],
+      facts: undefined,
+      errors: [],
+      providers: [],
+    });
+    generationProvider.mockReturnValue({ name: 'openai', generate });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('failed');
+    expect(generate).not.toHaveBeenCalled();
+  });
+});
+
 describe('a generated image that shows the wrong product', () => {
   beforeEach(() => {
     // Nothing findable, so the run falls through to Workflow B.
@@ -285,7 +311,7 @@ describe('a generated image that shows the wrong product', () => {
       reason: 'The image shows a box of Lipton black tea',
     });
 
-    const outcome = await processProduct(input);
+    const outcome = await processProduct(generating);
 
     expect(outcome.status).toBe('failed');
     if (outcome.status === 'failed') {
@@ -298,7 +324,7 @@ describe('a generated image that shows the wrong product', () => {
   it('is kept when the verifier confirms it', async () => {
     verifyProductImage.mockResolvedValue({ verdict: 'match', shown: 'body wash', reason: 'ok' });
 
-    const outcome = await processProduct(input);
+    const outcome = await processProduct(generating);
     expect(outcome.status).toBe('succeeded');
     if (outcome.status === 'succeeded') expect(outcome.kind).toBe('AI_GENERATED');
   });
@@ -307,7 +333,7 @@ describe('a generated image that shows the wrong product', () => {
     // An outage in the checker must not become an outage in the product.
     verifyProductImage.mockResolvedValue({ verdict: 'unknown', shown: '', reason: 'timeout' });
 
-    const outcome = await processProduct(input);
+    const outcome = await processProduct(generating);
     expect(outcome.status).toBe('succeeded');
   });
 });

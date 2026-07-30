@@ -117,7 +117,7 @@ export async function fetchJson<T>(url: string, options: FetchOptions = {}): Pro
 export async function fetchBinary(
   url: string,
   options: FetchOptions & { maxBytes?: number } = {},
-): Promise<{ buffer: Buffer; contentType: string }> {
+): Promise<{ buffer: Buffer; contentType: string; lastModified: string | null }> {
   const { maxBytes = env().MAX_IMAGE_DOWNLOAD_BYTES, ...rest } = options;
   assertPublicUrl(url);
 
@@ -146,11 +146,14 @@ export async function fetchBinary(
   }
 
   const contentType = (response.headers.get('content-type') ?? '').split(';')[0]?.trim() ?? '';
+  // Kept because it is the only date most image hosts ever state, and choosing
+  // between two photographs of the same product needs one.
+  const lastModified = response.headers.get('last-modified');
 
   if (!response.body) {
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.byteLength > maxBytes) throw new HttpError('Image exceeded the size limit');
-    return { buffer, contentType };
+    return { buffer, contentType, lastModified };
   }
 
   const chunks: Buffer[] = [];
@@ -167,7 +170,7 @@ export async function fetchBinary(
     chunks.push(Buffer.from(value));
   }
 
-  return { buffer: Buffer.concat(chunks), contentType };
+  return { buffer: Buffer.concat(chunks), contentType, lastModified };
 }
 
 /** Retry helper for flaky upstreams. Only retries transient failures. */

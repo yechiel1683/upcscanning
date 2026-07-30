@@ -264,6 +264,83 @@ const generating = {
   options: { ...DEFAULT_RENDER_OPTIONS, allowAiGeneration: true },
 };
 
+describe('choosing between two real photographs of the right product', () => {
+  function at(host: string, confidence = 0.9): SearchCandidate {
+    return {
+      provider: 'upcitemdb',
+      sourceUrl: `https://${host}/dial.jpg`,
+      providerConfidence: confidence,
+      title: 'Duracell Coppertop AA Batteries 8 Pack',
+    } as SearchCandidate;
+  }
+
+  it('takes the retailer selling it now over the archive that catalogued it once', async () => {
+    // Both are genuine photographs of the right product and both pass every
+    // identity and quality check. One shows the packaging currently on shelves.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [at('images.upcitemdb.com'), at('i5.walmartimages.com')],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status === 'succeeded') {
+      expect(outcome.sourceUrl).toContain('walmartimages.com');
+    }
+  });
+
+  it('still refuses to trade identity for freshness', async () => {
+    // A brand-new photograph of the wrong product is worth nothing. Recency is
+    // a tiebreaker, never a veto.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [at('images.upcitemdb.com', 0.98), at('i5.walmartimages.com', 0.1)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+    searchWeb.mockResolvedValue({ candidates: [], errors: [], facts: undefined });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status === 'succeeded') {
+      expect(outcome.sourceUrl).toContain('upcitemdb.com');
+    }
+  });
+
+  it('searches the web even when the archive already gave it something usable', async () => {
+    // The old behaviour stopped at the first acceptable image, which on a
+    // barcode-first pipeline is reliably the oldest one in existence.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [at('images.upcitemdb.com', 0.95)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+    searchWeb.mockResolvedValue({ candidates: [], errors: [], facts: undefined });
+
+    await processProduct(input);
+    expect(searchWeb).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not go looking when the archive image is not archival', async () => {
+    // A retailer's photograph from the barcode tier is already current, so
+    // there is nothing to gain from a second search.
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [at('i5.walmartimages.com', 0.95)],
+      facts,
+      errors: [],
+      providers: ['upcitemdb'],
+    });
+
+    await processProduct(input);
+    expect(searchWeb).not.toHaveBeenCalled();
+  });
+});
+
 describe('inventing an image is opt-in', () => {
   it('is off by default, because an invented image is not the product', async () => {
     // Three generic bottles — one with the barcode printed across it — went

@@ -96,6 +96,22 @@ export const renderOptionsSchema = z.object({
   allowAiGeneration: z.boolean().default(false),
   /** Stamp AI-generated images with a small corner badge. */
   watermarkAiImages: z.boolean().default(false),
+  /**
+   * Prefer the current packaging over the first acceptable photograph.
+   *
+   * Barcode databases are the best way to learn *what* a product is and among
+   * the worst places to see what it looks like now: their picture is whatever
+   * was attached when the record was created, and records are created once.
+   * Left alone the pipeline stops at the first good image it finds, which is
+   * exactly that one — so a body wash redesigned twice since comes back in its
+   * oldest livery, having passed every other check.
+   *
+   * With this on, the open web is searched alongside the barcode databases
+   * rather than only when they come up empty, and recency joins identity and
+   * quality in choosing between what comes back. It costs a search per product
+   * on a first run and nothing on a repeat.
+   */
+  preferNewest: z.boolean().default(true),
 });
 
 export type RenderOptions = z.infer<typeof renderOptionsSchema>;

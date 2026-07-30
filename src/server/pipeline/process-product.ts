@@ -24,6 +24,7 @@ import {
 } from '@/server/providers/llm/enrichment';
 import { lookupBarcodeCached, searchWeb, type SearchContext } from '@/server/providers/search';
 import { Memo } from '@/server/lib/memo';
+import { scoreRecency } from '@/server/images/recency';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
 /**
@@ -243,12 +244,26 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
   });
 
-  // --- 4. Fall through to the open web ------------------------------------
+  // --- 4. Go to the open web ----------------------------------------------
+  //
+  // Not only when the barcode tier came up empty. A GTIN lookup is the most
+  // reliable way to know what a product *is* and among the least reliable ways
+  // to see what it looks like today: its picture is whatever was attached when
+  // the record was made, and records are made once. Stopping at the first good
+  // image therefore reliably picks the oldest one in existence — a packaging
+  // design two refreshes out of date, having passed every check this pipeline
+  // has, because every one of them is about identity rather than currency.
+  //
+  // So with preferNewest on, the web is searched even when the barcode tier
+  // already produced something acceptable, and recency joins the decision.
   const goodEnough = (result: typeof best) =>
     Boolean(result && result.matchScore >= CONFIDENT_MATCH_THRESHOLD && result.qualityScore >= 0.7);
 
+  const barcodeImageLooksArchival =
+    best !== null && scoreRecency({ sourceUrl: best.candidate.sourceUrl }).score < 0.5;
+
   let searchedWeb = false;
-  if (!goodEnough(best)) {
+  if (!goodEnough(best) || (options.preferNewest && barcodeImageLooksArchival)) {
     searchedWeb = true;
 
     // Now it is worth a model call: we are about to search the open web, where
@@ -519,6 +534,8 @@ interface Winner {
   source: Buffer | null;
   /** Set when this candidate was served from the cache and needs no work. */
   cached: RenderResult | null;
+  /** How likely this is to show the packaging currently on shelves, 0-1. */
+  recencyScore: number;
 }
 
 interface EvaluateArgs {
@@ -530,6 +547,19 @@ interface EvaluateArgs {
   log: string[];
   maxDownloads: number;
   incumbent?: Winner | null;
+}
+
+/**
+ * How good a candidate is, all things considered.
+ *
+ * Identity dominates, because the wrong product photographed beautifully and
+ * published this morning is still the wrong product. Quality comes next.
+ * Recency is a tiebreaker with real weight but no veto: it decides between two
+ * acceptable pictures of the right thing, which is exactly the case where an
+ * archive's decade-old photograph used to win simply by being looked at first.
+ */
+function overallScore(match: number, quality: number, recency: number): number {
+  return match * 0.6 + quality * 0.25 + recency * 0.15;
 }
 
 /**
@@ -606,8 +636,14 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
 
     if (remembered?.hit) {
       const { candidate, assessment } = remembered.entry;
-      const combined = assessment.score * 0.65 + remembered.hit.qualityScore * 0.35;
-      const bestCombined = best ? best.matchScore * 0.65 + best.qualityScore * 0.35 : -1;
+      const recency = scoreRecency({
+        sourceUrl: candidate.sourceUrl,
+        pageUrl: candidate.pageUrl,
+      });
+      const combined = overallScore(assessment.score, remembered.hit.qualityScore, recency.score);
+      const bestCombined = best
+        ? overallScore(best.matchScore, best.qualityScore, best.recencyScore)
+        : -1;
       if (combined > bestCombined) {
         best = {
           candidate,
@@ -615,6 +651,7 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
           qualityScore: remembered.hit.qualityScore,
           source: null,
           cached: remembered.hit.render,
+          recencyScore: recency.score,
         };
       }
       evaluated.push({
@@ -633,18 +670,25 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
     const results = await Promise.all(
       wave.map(async ({ candidate, assessment }) => {
         try {
-          const source = await downloadAndPrepare(candidate.sourceUrl);
-          const analysis = await analyseImage(source);
-          return { candidate, assessment, source, analysis, error: null };
+          const { buffer, lastModified } = await downloadAndPrepare(candidate.sourceUrl);
+          const analysis = await analyseImage(buffer);
+          return { candidate, assessment, source: buffer, lastModified, analysis, error: null };
         } catch (error) {
-          return { candidate, assessment, source: null, analysis: null, error };
+          return {
+            candidate,
+            assessment,
+            source: null,
+            lastModified: null,
+            analysis: null,
+            error,
+          };
         }
       }),
     );
 
     // Scored in ranking order, not completion order, so which image wins never
     // depends on which host happened to answer first.
-    for (const { candidate, assessment, source, analysis, error } of results) {
+    for (const { candidate, assessment, source, lastModified, analysis, error } of results) {
       if (error || !source || !analysis) {
         const message = error instanceof Error ? error.message : String(error);
         evaluated.push({
@@ -683,8 +727,15 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
         continue;
       }
 
-      const combined = assessment.score * 0.65 + quality.score * 0.35;
-      const bestCombined = best ? best.matchScore * 0.65 + best.qualityScore * 0.35 : -1;
+      const recency = scoreRecency({
+        sourceUrl: candidate.sourceUrl,
+        pageUrl: candidate.pageUrl,
+        lastModified,
+      });
+      const combined = overallScore(assessment.score, quality.score, recency.score);
+      const bestCombined = best
+        ? overallScore(best.matchScore, best.qualityScore, best.recencyScore)
+        : -1;
 
       if (combined > bestCombined) {
         best = {
@@ -693,6 +744,7 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
           qualityScore: quality.score,
           source,
           cached: null,
+          recencyScore: recency.score,
         };
       }
 
@@ -704,7 +756,7 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
         selected: false,
       });
       log.push(
-        `Accepted ${hostOf(candidate.sourceUrl)} — match ${assessment.score.toFixed(2)}, quality ${quality.score.toFixed(2)} (${quality.notes.join(', ') || 'no notes'})`,
+        `Accepted ${hostOf(candidate.sourceUrl)} — match ${assessment.score.toFixed(2)}, quality ${quality.score.toFixed(2)}, recency ${recency.score.toFixed(2)} (${recency.reason}; ${quality.notes.join(', ') || 'no notes'})`,
       );
     }
   }
@@ -738,8 +790,10 @@ const ACCEPTED_IMAGE_TYPES = new Set([
   'image/tiff',
 ]);
 
-async function downloadAndPrepare(url: string): Promise<Buffer> {
-  const { buffer, contentType } = await fetchBinary(url, {
+async function downloadAndPrepare(
+  url: string,
+): Promise<{ buffer: Buffer; lastModified: string | null }> {
+  const { buffer, contentType, lastModified } = await fetchBinary(url, {
     maxBytes: env().MAX_IMAGE_DOWNLOAD_BYTES,
   });
 
@@ -753,7 +807,7 @@ async function downloadAndPrepare(url: string): Promise<Buffer> {
     throw new Error('Response did not contain image data');
   }
 
-  return buffer;
+  return { buffer, lastModified };
 }
 
 function looksLikeImage(buffer: Buffer): boolean {

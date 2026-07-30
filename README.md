@@ -72,6 +72,27 @@ The check only ever *rejects*. An unreadable answer, a missing key or a provider
 outage all resolve to "unknown" and let the image through, because refusing
 every product when the verifier is down would be its own outage.
 
+**The packaging on shelves now, not the first photograph that fits.** Products
+get redesigned, every previous look is still online, and all of them pass an
+identity check — so "a real photograph of the right product" is not the same as
+"the picture of it that is true today".
+
+This mattered more than it sounds, because the pipeline was structurally biased
+towards the oldest image in existence: barcode databases are tried first and
+their picture is whatever was attached when the record was created, and records
+are created once. Stopping at the first acceptable image reliably picked that
+one.
+
+Candidates now carry a recency score — a date the host states outright, a year
+or cache-busting timestamp in the URL, or failing those, whether the image
+lives at a shop currently selling the product or at an archive that catalogued
+it once. It joins identity and quality in the ranking as a tiebreaker with real
+weight and no veto: a brand-new photograph of the wrong product is still worth
+nothing. And when the barcode tier's own image looks archival, the open web is
+searched even though that image would have been good enough — which costs a
+search on a first run and nothing on a repeat. Turn `preferNewest` off per
+batch to take the first acceptable image instead.
+
 **One consistent look.** Sourced and generated images go through the same
 pipeline — cutout, framing, background, contact shadow, resize, encode — so a
 catalog assembled from a dozen different websites looks like one photoshoot.

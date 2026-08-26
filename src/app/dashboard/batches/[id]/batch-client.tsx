@@ -42,6 +42,7 @@ interface BatchResponse {
     PENDING: number;
     PROCESSING: number;
     SUCCEEDED: number;
+    NEEDS_REVIEW: number;
     FAILED: number;
     SKIPPED: number;
     isRunning: boolean;
@@ -69,6 +70,7 @@ interface ProductRow {
   status: string;
   attempts: number;
   errorMessage: string | null;
+  reviewReason: string | null;
   outputName: string | null;
   image: {
     id: string;
@@ -94,6 +96,7 @@ interface ProductsResponse {
 const TABS = [
   { key: '', label: 'All' },
   { key: 'SUCCEEDED', label: 'Completed' },
+  { key: 'NEEDS_REVIEW', label: 'Check these' },
   { key: 'FAILED', label: 'Failed' },
   { key: 'PENDING', label: 'Pending' },
 ] as const;
@@ -160,6 +163,25 @@ export function BatchClient({ batchId }: { batchId: string }) {
 
     return () => clearInterval(timer);
   }, [data?.progress.isRunning, loadBatch, loadProducts]);
+
+  /** Settle a row the pipeline was not confident about. */
+  async function decide(productId: string, accept: boolean) {
+    setAction(`decide:${productId}`);
+    try {
+      await fetch(`/api/products/${productId}/confirm`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accept }),
+      });
+    } catch {
+      // Recoverable by pressing the button again; the reload below shows
+      // whichever state actually took.
+    } finally {
+      setAction(null);
+    }
+    await loadBatch();
+    await loadProducts();
+  }
 
   async function startExport() {
     setAction('export');
@@ -268,7 +290,11 @@ export function BatchClient({ batchId }: { batchId: string }) {
           ) : (
             <Button
               onClick={() => void startExport()}
-              disabled={action !== null || progress.SUCCEEDED === 0 || Boolean(buildingExport)}
+              disabled={
+                action !== null ||
+                progress.SUCCEEDED + progress.NEEDS_REVIEW === 0 ||
+                Boolean(buildingExport)
+              }
             >
               {buildingExport
                 ? 'Building ZIP…'
@@ -299,7 +325,14 @@ export function BatchClient({ batchId }: { batchId: string }) {
           />
         </div>
         <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm">
-          <Metric label="Images" value={progress.SUCCEEDED} tone="positive" />
+          <Metric
+            label="Images"
+            value={progress.SUCCEEDED + progress.NEEDS_REVIEW}
+            tone="positive"
+          />
+          {progress.NEEDS_REVIEW > 0 ? (
+            <Metric label="To check" value={progress.NEEDS_REVIEW} tone="muted" />
+          ) : null}
           <Metric label="Failed" value={progress.FAILED} tone={progress.FAILED > 0 ? 'danger' : 'muted'} />
           <Metric label="In queue" value={progress.PENDING + progress.PROCESSING} tone="muted" />
           {data.imageKinds.AI_GENERATED ? (
@@ -402,7 +435,12 @@ export function BatchClient({ batchId }: { batchId: string }) {
           <>
             <ul className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {products.products.map((product) => (
-                <ProductCard key={product.id} product={product} />
+                <ProductCard
+                  key={product.id}
+                  product={product}
+                  busy={action === `decide:${product.id}`}
+                  onDecide={(accept) => void decide(product.id, accept)}
+                />
               ))}
             </ul>
 
@@ -455,7 +493,15 @@ function Metric({
   );
 }
 
-function ProductCard({ product }: { product: ProductRow }) {
+function ProductCard({
+  product,
+  busy,
+  onDecide,
+}: {
+  product: ProductRow;
+  busy: boolean;
+  onDecide: (accept: boolean) => void;
+}) {
   const transparent = product.image?.fileName.endsWith('.png');
 
   return (
@@ -467,9 +513,9 @@ function ProductCard({ product }: { product: ProductRow }) {
         )}
       >
         {product.image ? (
-          // eslint-disable-next-line @next/next/no-img-element -- images are
-          // user-scoped and streamed from our own API, so the optimizer adds
-          // nothing but a second copy of every asset.
+          // Images are user-scoped and streamed from our own API, so the
+          // optimizer adds nothing but a second copy of every asset.
+          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={`/api/images/${product.image.id}/file`}
             alt={product.name}
@@ -522,6 +568,23 @@ function ProductCard({ product }: { product: ProductRow }) {
           <p className="line-clamp-2 text-[11px] leading-snug text-danger" title={product.errorMessage}>
             {product.errorMessage}
           </p>
+        ) : null}
+
+        {product.status === 'NEEDS_REVIEW' ? (
+          <div className="space-y-2 rounded-lg bg-warning-soft p-2">
+            <p className="text-[11px] leading-snug text-fg">
+              {product.reviewReason ??
+                'This was the best that could be found. Check it before you use it.'}
+            </p>
+            <div className="flex gap-1.5">
+              <Button size="sm" disabled={busy} onClick={() => onDecide(true)}>
+                Looks right
+              </Button>
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => onDecide(false)}>
+                Reject
+              </Button>
+            </div>
+          </div>
         ) : null}
       </div>
     </li>

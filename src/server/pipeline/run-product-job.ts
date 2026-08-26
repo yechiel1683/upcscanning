@@ -9,7 +9,8 @@ import {
 import { prisma } from '@/server/db';
 import { buildFileName } from '@/server/images/naming';
 import { keys, storage } from '@/server/storage';
-import { processProduct } from './process-product';
+import { queue } from '@/server/queue';
+import { EFFORT_LADDER, effortForAttempt, processProduct } from './process-product';
 
 /**
  * The database-facing wrapper around the pipeline: load a product, run it,
@@ -23,6 +24,7 @@ export interface JobResult {
   message?: string;
 }
 
+
 export async function runProductJob(productId: string): Promise<JobResult> {
   const product = await prisma.product.findUnique({
     where: { id: productId },
@@ -33,7 +35,13 @@ export async function runProductJob(productId: string): Promise<JobResult> {
   if (product.batch.status === BatchStatus.CANCELLED) {
     return { productId, status: 'skipped', message: 'Batch was cancelled' };
   }
-  if (product.status === ProductStatus.SUCCEEDED) {
+  // A row awaiting a decision already has an image. Reprocessing it would throw
+  // away the picture the customer is being asked about, so a duplicate job is a
+  // no-op; an explicit retry clears the status first.
+  if (
+    product.status === ProductStatus.SUCCEEDED ||
+    product.status === ProductStatus.NEEDS_REVIEW
+  ) {
     return { productId, status: 'skipped', message: 'Already processed' };
   }
 
@@ -43,14 +51,17 @@ export async function runProductJob(productId: string): Promise<JobResult> {
     .data;
   const renderOptions = { ...DEFAULT_RENDER_OPTIONS, ...(options ?? {}) };
 
-  await prisma.product.update({
+  const running = await prisma.product.update({
     where: { id: productId },
     data: {
       status: ProductStatus.PROCESSING,
       attempts: { increment: 1 },
       errorMessage: null,
+      reviewReason: null,
     },
+    select: { attempts: true },
   });
+  const effort = effortForAttempt(running.attempts);
 
   // Mark the batch as running on the first product to reach this point.
   await prisma.batch.updateMany({
@@ -74,6 +85,7 @@ export async function runProductJob(productId: string): Promise<JobResult> {
       },
       options: renderOptions,
       cachedEnrichment: readEnrichment(product.enrichment),
+      effort,
     });
 
     // Replace any previous audit trail so a retry does not stack duplicates.
@@ -104,6 +116,7 @@ export async function runProductJob(productId: string): Promise<JobResult> {
         outcome.reason,
         outcome.enrichment,
         outcome.facts,
+        running.attempts,
       );
       return { productId, status: 'failed', message: outcome.reason };
     }
@@ -155,7 +168,8 @@ export async function runProductJob(productId: string): Promise<JobResult> {
       await tx.product.update({
         where: { id: productId },
         data: {
-          status: ProductStatus.SUCCEEDED,
+          status: outcome.needsReview ? ProductStatus.NEEDS_REVIEW : ProductStatus.SUCCEEDED,
+          reviewReason: outcome.reviewReason?.slice(0, 500) ?? null,
           outputName: fileName,
           processedAt: new Date(),
           errorMessage: null,
@@ -200,18 +214,68 @@ export async function runProductJob(productId: string): Promise<JobResult> {
     return { productId, status: 'succeeded' };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await failProduct(productId, product.batchId, message, null);
+    await failProduct(productId, product.batchId, message, null, undefined, running.attempts);
     return { productId, status: 'failed', message };
   }
 }
 
+/**
+ * Record an empty row — and, while the ladder still has a rung left, put it
+ * straight back in the queue at a higher effort rather than calling it failed.
+ *
+ * A row queued for another pass goes back to PENDING, not FAILED: the batch is
+ * not finished, its failure counter must not move yet, and the customer should
+ * not be shown a failure that is about to be revisited.
+ */
 async function failProduct(
   productId: string,
   batchId: string,
   message: string,
   enrichment: ProductEnrichment | null,
-  facts?: ProductFacts,
+  facts: ProductFacts | undefined,
+  attempts: number,
 ): Promise<void> {
+  const retrying = attempts < EFFORT_LADDER.length;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.product.update({
+      where: { id: productId },
+      data: {
+        status: retrying ? ProductStatus.PENDING : ProductStatus.FAILED,
+        errorMessage: message.slice(0, 1000),
+        processedAt: retrying ? null : new Date(),
+        ...(enrichment ? { enrichment: enrichment as unknown as object } : {}),
+        // Even a failed product is worth more with its details filled in.
+        ...(facts ? { facts: facts as unknown as object } : {}),
+      },
+    });
+    if (!retrying) {
+      await tx.batch.update({
+        where: { id: batchId },
+        data: { processedCount: { increment: 1 }, failedCount: { increment: 1 } },
+      });
+    }
+  });
+
+  if (retrying) {
+    try {
+      await queue().enqueueProducts([{ productId, batchId, attempt: attempts + 1 }]);
+      return;
+    } catch (error) {
+      // The row is PENDING with nothing coming to pick it up, which would hang
+      // the batch forever — no error, no log, just a batch that never
+      // completes. A failure the customer can see and retry is strictly better.
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error('[pipeline] could not queue a retry', reason);
+      await markFailed(productId, batchId, `${message} (retry could not be queued)`);
+    }
+  }
+
+  await finaliseBatchIfDone(batchId);
+}
+
+/** Settle a row as failed and move the batch counters, with nothing else to try. */
+async function markFailed(productId: string, batchId: string, message: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await tx.product.update({
       where: { id: productId },
@@ -219,9 +283,6 @@ async function failProduct(
         status: ProductStatus.FAILED,
         errorMessage: message.slice(0, 1000),
         processedAt: new Date(),
-        ...(enrichment ? { enrichment: enrichment as unknown as object } : {}),
-        // Even a failed product is worth more with its details filled in.
-        ...(facts ? { facts: facts as unknown as object } : {}),
       },
     });
     await tx.batch.update({
@@ -229,8 +290,6 @@ async function failProduct(
       data: { processedCount: { increment: 1 }, failedCount: { increment: 1 } },
     });
   });
-
-  await finaliseBatchIfDone(batchId);
 }
 
 /**
@@ -244,8 +303,12 @@ export async function finaliseBatchIfDone(batchId: string): Promise<void> {
   });
   if (remaining > 0) return;
 
+  // A row awaiting a decision produced an image, so it counts towards the
+  // batch's successes; only an empty row is a failure.
   const [succeeded, failed, skipped] = await Promise.all([
-    prisma.product.count({ where: { batchId, status: ProductStatus.SUCCEEDED } }),
+    prisma.product.count({
+      where: { batchId, status: { in: [ProductStatus.SUCCEEDED, ProductStatus.NEEDS_REVIEW] } },
+    }),
     prisma.product.count({ where: { batchId, status: ProductStatus.FAILED } }),
     prisma.product.count({ where: { batchId, status: ProductStatus.SKIPPED } }),
   ]);

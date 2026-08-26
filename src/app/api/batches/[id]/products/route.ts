@@ -66,6 +66,7 @@ export const GET = withUser(async (user, request, { params }: Params) => {
         status: true,
         attempts: true,
         errorMessage: true,
+        reviewReason: true,
         outputName: true,
         processedAt: true,
         images: {

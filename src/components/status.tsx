@@ -22,6 +22,7 @@ const PRODUCT_LABELS: Record<string, { label: string; tone: 'neutral' | 'accent'
   PENDING: { label: 'Pending', tone: 'neutral' },
   PROCESSING: { label: 'Processing', tone: 'accent' },
   SUCCEEDED: { label: 'Done', tone: 'positive' },
+  NEEDS_REVIEW: { label: 'Check this one', tone: 'warning' },
   FAILED: { label: 'Failed', tone: 'danger' },
   SKIPPED: { label: 'Skipped', tone: 'neutral' },
 };

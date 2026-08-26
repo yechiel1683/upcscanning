@@ -1,7 +1,7 @@
 import { ImageSourceKind } from '@prisma/client';
 
 import { buildFileName } from '@/server/images/naming';
-import { processProduct } from '@/server/pipeline/process-product';
+import { EFFORT_LADDER, processProduct } from '@/server/pipeline/process-product';
 import { applyFacts } from '@/server/pipeline/run-product-job';
 import { buildZip, type ZipRow } from '@/server/export/build-zip';
 import {
@@ -23,16 +23,38 @@ import {
 /** Guests run with modest concurrency: this is the web process, not a worker. */
 const GUEST_CONCURRENCY = 3;
 
+
 export async function runGuestBatch(session: GuestSession, batch: GuestBatch): Promise<void> {
   batch.status = 'PROCESSING';
 
-  const queue = [...batch.products];
+  for (const effort of EFFORT_LADDER) {
+    const pending = batch.products.filter((product) =>
+      effort === 'normal' ? true : product.status === 'FAILED',
+    );
+    if (pending.length === 0) break;
+    // Rows being retried go back to PROCESSING, so the page shows work still
+    // happening rather than a failure that is about to be revisited.
+    for (const product of pending) product.status = 'PROCESSING';
+    await runPass(session, batch, pending, effort);
+  }
+
+  settleGuestBatch(batch);
+}
+
+async function runPass(
+  session: GuestSession,
+  batch: GuestBatch,
+  products: GuestBatch['products'],
+  effort: (typeof EFFORT_LADDER)[number],
+): Promise<void> {
+  const queue = [...products];
   const workers = Array.from({ length: Math.min(GUEST_CONCURRENCY, queue.length) }, async () => {
     for (;;) {
       const product = queue.shift();
       if (!product) return;
 
       product.status = 'PROCESSING';
+      product.attempts += 1;
       try {
         const outcome = await processProduct({
           product: {
@@ -49,6 +71,7 @@ export async function runGuestBatch(session: GuestSession, batch: GuestBatch): P
             imageUrl: product.imageUrl ?? null,
           },
           options: batch.options,
+          effort,
         });
 
         if (outcome.status === 'failed') {
@@ -89,8 +112,10 @@ export async function runGuestBatch(session: GuestSession, batch: GuestBatch): P
         product.description = resolved.description ?? undefined;
         product.facts = outcome.facts ?? null;
         product.outputName = fileName;
-        product.status = 'SUCCEEDED';
+        product.status = outcome.needsReview ? 'NEEDS_REVIEW' : 'SUCCEEDED';
         product.errorMessage = null;
+        product.reviewReason = outcome.reviewReason ?? null;
+        product.alternatives = outcome.alternatives;
         product.image = {
           id: newImageId(),
           kind:
@@ -120,7 +145,6 @@ export async function runGuestBatch(session: GuestSession, batch: GuestBatch): P
   });
 
   await Promise.all(workers);
-  settleGuestBatch(batch);
 }
 
 /** Build the guest's ZIP from memory, using the shared deliverable format. */
@@ -140,7 +164,12 @@ export async function buildGuestZip(batch: GuestBatch): Promise<{
     description: product.description ?? null,
     price: product.price ?? null,
     facts: product.facts,
-    succeeded: product.status === 'SUCCEEDED',
+    outcome:
+      product.status === 'SUCCEEDED'
+        ? 'ok'
+        : product.status === 'NEEDS_REVIEW'
+          ? 'needs_review'
+          : 'failed',
     errorMessage: product.errorMessage,
     image: product.image
       ? {

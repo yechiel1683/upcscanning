@@ -35,7 +35,13 @@ export interface ZipRow {
   description: string | null;
   price: number | null;
   facts: ProductFacts | null;
-  succeeded: boolean;
+  /**
+   * Three states rather than a `succeeded` flag, because a row awaiting a
+   * decision has a real image and must ship with one. A boolean made that an
+   * illegal state to express, so those rows were silently dropped from the
+   * archive and reported as failures.
+   */
+  outcome: 'ok' | 'needs_review' | 'failed';
   errorMessage: string | null;
   image: {
     id: string;
@@ -97,6 +103,7 @@ export async function buildZip(input: ZipInput): Promise<{ buffer: Buffer; image
   let realCount = 0;
   let aiCount = 0;
   let providedCount = 0;
+  let reviewCount = 0;
 
   for (const row of input.rows) {
     const base: Record<string, string> = {
@@ -112,7 +119,7 @@ export async function buildZip(input: ZipInput): Promise<{ buffer: Buffer; image
       details_source: row.facts?.source ?? '',
     };
 
-    if (row.succeeded && row.image) {
+    if (row.outcome !== 'failed' && row.image) {
       const fileName = makeUniqueFileName(row.image.fileName, taken);
       try {
         archive.append(await row.image.read(), { name: `${ZIP_LAYOUT.imagesDir}/${fileName}` });
@@ -121,6 +128,7 @@ export async function buildZip(input: ZipInput): Promise<{ buffer: Buffer; image
         if (row.image.kind === ImageSourceKind.AI_GENERATED) aiCount += 1;
         else if (row.image.kind === ImageSourceKind.USER_PROVIDED) providedCount += 1;
         else realCount += 1;
+        if (row.outcome === 'needs_review') reviewCount += 1;
 
         csvRows.push({
           ...base,
@@ -132,7 +140,7 @@ export async function buildZip(input: ZipInput): Promise<{ buffer: Buffer; image
           dimensions: `${row.image.width}x${row.image.height}`,
           match_confidence: row.image.matchScore.toFixed(2),
           quality_score: row.image.qualityScore.toFixed(2),
-          status: 'ok',
+          status: row.outcome === 'needs_review' ? 'check this one' : 'ok',
         });
         continue;
       } catch (error) {
@@ -164,7 +172,14 @@ export async function buildZip(input: ZipInput): Promise<{ buffer: Buffer; image
   }
 
   archive.append(
-    buildReport(input, { imageCount, realCount, aiCount, providedCount, failures: failures.length }),
+    buildReport(input, {
+      imageCount,
+      realCount,
+      aiCount,
+      providedCount,
+      reviewCount,
+      failures: failures.length,
+    }),
     { name: ZIP_LAYOUT.reportName },
   );
   archive.append(buildReadme(aiCount), { name: ZIP_LAYOUT.readmeName });
@@ -205,6 +220,7 @@ interface ReportStats {
   realCount: number;
   aiCount: number;
   providedCount: number;
+  reviewCount: number;
   failures: number;
 }
 
@@ -229,6 +245,9 @@ function buildReport(input: ZipInput, stats: ReportStats): string {
     `  Supplied in spreadsheet:${String(stats.providedCount).padStart(2)}`,
     `  AI generated:           ${stats.aiCount}`,
     `Products without images:  ${stats.failures}`,
+    stats.reviewCount > 0
+      ? `Worth a look:             ${stats.reviewCount} (marked "check this one" in the CSV)`
+      : '',
     '',
     stats.aiCount > 0
       ? [

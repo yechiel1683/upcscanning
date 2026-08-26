@@ -15,9 +15,23 @@ import { env } from '@/lib/env';
 export const PRODUCT_QUEUE = 'product-processing';
 export const EXPORT_QUEUE = 'export-building';
 
+/** Exported for the tests that pin the deduplication rule. */
+export function productJobId(data: { productId: string; attempt?: number }): string {
+  return data.attempt ? `product:${data.productId}:${data.attempt}` : `product:${data.productId}`;
+}
+
 export interface ProductJobData {
   productId: string;
   batchId: string;
+  /**
+   * Which pass this is, used only to keep the job distinguishable from the one
+   * that scheduled it. Deduplication is keyed on the product, so a retry queued
+   * from inside a still-running job — or one queued while the previous job is
+   * still in the completed window — collides with it and is dropped, leaving
+   * the row pending forever. Passing the attempt count gives each pass its own
+   * key while still collapsing genuine duplicates within a pass.
+   */
+  attempt?: number;
 }
 
 export interface ExportJobData {
@@ -143,9 +157,9 @@ class RedisQueue implements QueueDriver {
         jobs.slice(i, i + CHUNK).map((data) => ({
           name: 'process-product',
           data,
-          // Deduplicate: re-enqueueing the same product is a no-op while the
-          // original job is still around.
-          opts: { jobId: `product:${data.productId}` },
+          // Deduplicate within a pass: enqueueing the same product twice for
+          // the same attempt is a no-op while that job is still around.
+          opts: { jobId: productJobId(data) },
         })),
       );
     }

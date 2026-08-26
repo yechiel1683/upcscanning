@@ -44,6 +44,14 @@ interface GuestImage {
   provider: string | null;
 }
 
+/** Another picture of the same product that was also a real contender. */
+interface Alternative {
+  sourceUrl: string;
+  provider: string;
+  matchScore: number;
+  qualityScore: number;
+}
+
 interface GuestProduct {
   id: string;
   rowNumber: number;
@@ -53,6 +61,9 @@ interface GuestProduct {
   brand: string | null;
   status: string;
   errorMessage: string | null;
+  reviewReason?: string | null;
+  attempts?: number;
+  alternatives?: Alternative[];
   outputName: string | null;
   detailsSource: string | null;
   image: GuestImage | null;
@@ -65,6 +76,7 @@ interface BatchState {
     finished: number;
     percent: number;
     SUCCEEDED: number;
+    NEEDS_REVIEW: number;
     FAILED: number;
     isRunning: boolean;
   };
@@ -85,6 +97,8 @@ export function TryClient() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<BatchState | null>(null);
+  /** Which row is mid-decision, so a swap that has to render says so. */
+  const [deciding, setDeciding] = useState<string | null>(null);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -180,6 +194,27 @@ export function TryClient() {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * Settle a row the pipeline was not confident about: keep this image, swap to
+   * the other candidate, or reject it.
+   */
+  async function decide(productId: string, choice: { accept: boolean; use?: string }) {
+    setDeciding(productId);
+    try {
+      await fetch(`/api/guest/products/${productId}/confirm`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(choice),
+      });
+    } catch {
+      // A failed confirmation is recoverable by pressing the button again;
+      // the refresh below shows whichever state actually took.
+    } finally {
+      setDeciding(null);
+    }
+    if (state) await poll(state.batch.id);
   }
 
   const canStart = mode === 'barcodes' ? count > 0 : Boolean(file);
@@ -348,15 +383,33 @@ export function TryClient() {
           </div>
         </Card>
       ) : (
-        <Results state={state} onReset={() => { setState(null); setBarcodes(''); setFile(null); }} />
+        <Results
+          state={state}
+          deciding={deciding}
+          onDecide={(id, choice) => void decide(id, choice)}
+          onReset={() => { setState(null); setBarcodes(''); setFile(null); }}
+        />
       )}
     </div>
   );
 }
 
-function Results({ state, onReset }: { state: BatchState; onReset: () => void }) {
+function Results({
+  state,
+  onReset,
+  onDecide,
+  deciding,
+}: {
+  state: BatchState;
+  onReset: () => void;
+  onDecide: (productId: string, choice: { accept: boolean; use?: string }) => void;
+  deciding: string | null;
+}) {
   const { progress } = state;
   const done = !progress.isRunning;
+  // A row awaiting a decision has an image. Counting only SUCCEEDED understated
+  // the result and, when every image needed a look, hid the download entirely.
+  const withImages = progress.SUCCEEDED + progress.NEEDS_REVIEW;
 
   return (
     <div className="space-y-6">
@@ -376,9 +429,15 @@ function Results({ state, onReset }: { state: BatchState; onReset: () => void })
 
         <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-3">
           <span className="text-sm">
-            <span className="font-semibold text-positive">{progress.SUCCEEDED}</span>{' '}
+            <span className="font-semibold text-positive">{withImages}</span>{' '}
             <span className="text-muted">images</span>
           </span>
+          {progress.NEEDS_REVIEW > 0 ? (
+            <span className="text-sm">
+              <span className="font-semibold text-warning">{progress.NEEDS_REVIEW}</span>{' '}
+              <span className="text-muted">to check</span>
+            </span>
+          ) : null}
           {progress.FAILED > 0 ? (
             <span className="text-sm">
               <span className="font-semibold text-danger">{progress.FAILED}</span>{' '}
@@ -390,7 +449,7 @@ function Results({ state, onReset }: { state: BatchState; onReset: () => void })
             <Button variant="secondary" size="sm" onClick={onReset}>
               New batch
             </Button>
-            {progress.SUCCEEDED > 0 ? (
+            {withImages > 0 ? (
               <a href={`/api/guest/batches/${state.batch.id}/export`}>
                 <Button size="sm">Download ZIP</Button>
               </a>
@@ -398,7 +457,7 @@ function Results({ state, onReset }: { state: BatchState; onReset: () => void })
           </div>
         </div>
 
-        {done && progress.SUCCEEDED === 0 && progress.FAILED > 0 ? (
+        {done && withImages === 0 && progress.FAILED > 0 ? (
           // Every product failing usually means one missing setting, not one
           // problem per product. Say it once, in full, instead of leaving the
           // reason truncated inside every card.
@@ -423,8 +482,9 @@ function Results({ state, onReset }: { state: BatchState; onReset: () => void })
           <li key={product.id} className="overflow-hidden rounded-xl border border-line bg-surface">
             <div className="relative flex aspect-square items-center justify-center bg-surface-2">
               {product.image ? (
-                // eslint-disable-next-line @next/next/no-img-element -- served
-                // from memory by our own route; the optimizer adds nothing.
+                // Served from memory by our own route; the optimizer adds
+                // nothing here but a second copy of every asset.
+                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={`/api/guest/images/${product.image.id}/file`}
                   alt={product.name}
@@ -471,6 +531,66 @@ function Results({ state, onReset }: { state: BatchState; onReset: () => void })
                 <p className="line-clamp-2 text-[11px] leading-snug text-danger" title={product.errorMessage}>
                   {product.errorMessage}
                 </p>
+              ) : null}
+              {product.status === 'NEEDS_REVIEW' ? (
+                <div className="space-y-2 rounded-lg bg-warning-soft p-2">
+                  <p className="text-[11px] leading-snug text-fg">
+                    {product.reviewReason ??
+                      'This was the best that could be found. Check it before you use it.'}
+                  </p>
+                  {product.attempts && product.attempts > 1 ? (
+                    <p className="text-[10px] text-muted">
+                      Searched {product.attempts} times, widening each time.
+                    </p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      size="sm"
+                      disabled={deciding === product.id}
+                      onClick={() => onDecide(product.id, { accept: true })}
+                    >
+                      Looks right
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      disabled={deciding === product.id}
+                      onClick={() => onDecide(product.id, { accept: false })}
+                    >
+                      Reject
+                    </Button>
+                  </div>
+
+                  {/* The other picture that was in the running. Offered rather
+                      than chosen, because when the scores are this close the
+                      person filling the catalog judges better than the number
+                      does. */}
+                  {product.alternatives && product.alternatives.length > 0 ? (
+                    <div className="space-y-1 border-t border-line pt-2">
+                      <p className="text-[10px] font-medium text-muted">
+                        {product.alternatives.length === 1
+                          ? 'One other picture was found:'
+                          : `${product.alternatives.length} other pictures were found:`}
+                      </p>
+                      {product.alternatives.map((option) => (
+                        <button
+                          key={option.sourceUrl}
+                          type="button"
+                          disabled={deciding === product.id}
+                          onClick={() => onDecide(product.id, { accept: true, use: option.sourceUrl })}
+                          className="flex w-full items-baseline justify-between gap-2 rounded px-1.5 py-1 text-left text-[11px] text-fg hover:bg-surface-2 disabled:opacity-60"
+                        >
+                          <span className="truncate">{option.provider}</span>
+                          <span className="shrink-0 text-muted">
+                            {deciding === product.id
+                              ? 'Working…'
+                              : `match ${option.matchScore.toFixed(2)} · use this`}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           </li>

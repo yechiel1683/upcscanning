@@ -32,7 +32,7 @@ export const POST = withUser(async (user, request, { params }: Params) => {
         status: { in: [ProductStatus.FAILED, ProductStatus.SKIPPED] },
         ...(body.productIds?.length ? { id: { in: body.productIds } } : {}),
       },
-      select: { id: true },
+      select: { id: true, attempts: true },
     });
 
     if (targets.length === 0) {
@@ -84,7 +84,15 @@ export const POST = withUser(async (user, request, { params }: Params) => {
       });
     });
 
-    await queue().enqueueProducts(ids.map((productId) => ({ productId, batchId: id })));
+    // The attempt number keeps this job distinct from the completed one it is
+    // replacing, which shares the product id and would otherwise swallow it.
+    await queue().enqueueProducts(
+      targets.map((target) => ({
+        productId: target.id,
+        batchId: id,
+        attempt: target.attempts + 1,
+      })),
+    );
 
     return ok({ retrying: ids.length });
   } catch (error) {

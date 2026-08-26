@@ -30,13 +30,15 @@ export const GET = withUser(async (user, _request, { params }: Params) => {
     PENDING: 0,
     PROCESSING: 0,
     SUCCEEDED: 0,
+    NEEDS_REVIEW: 0,
     FAILED: 0,
     SKIPPED: 0,
   };
   for (const row of grouped) counts[row.status] = row._count._all;
 
   const total = batch._count.products;
-  const finished = counts.SUCCEEDED + counts.FAILED + counts.SKIPPED;
+  const finished =
+    counts.SUCCEEDED + counts.NEEDS_REVIEW + counts.FAILED + counts.SKIPPED;
 
   const imageKinds = await prisma.imageAsset.groupBy({
     by: ['kind'],

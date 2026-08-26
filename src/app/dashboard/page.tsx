@@ -56,7 +56,9 @@ export default async function DashboardPage() {
   >;
 
   const totalProducts = totals.reduce((sum, t) => sum + t._count._all, 0);
-  const succeeded = byStatus.SUCCEEDED ?? 0;
+  // A row awaiting a decision produced an image, so it belongs in the count of
+  // what this account has actually got out of the product.
+  const succeeded = (byStatus.SUCCEEDED ?? 0) + (byStatus.NEEDS_REVIEW ?? 0);
   const failed = byStatus.FAILED ?? 0;
   const inFlight = (byStatus.PENDING ?? 0) + (byStatus.PROCESSING ?? 0);
 

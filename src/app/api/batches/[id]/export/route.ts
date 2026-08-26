@@ -17,8 +17,13 @@ export const POST = withUser(async (user, _request, { params }: Params) => {
     });
     if (!batch) return notFound('Batch');
 
+    // A row awaiting a decision has a real image and ships marked, so it counts
+    // as something worth exporting.
     const ready = await prisma.product.count({
-      where: { batchId: id, status: ProductStatus.SUCCEEDED },
+      where: {
+        batchId: id,
+        status: { in: [ProductStatus.SUCCEEDED, ProductStatus.NEEDS_REVIEW] },
+      },
     });
     if (ready === 0) {
       return fail('There are no finished images to export yet.', 409);

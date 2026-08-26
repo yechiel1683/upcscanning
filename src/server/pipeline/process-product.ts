@@ -30,7 +30,7 @@ import {
 } from '@/server/providers/search';
 import { Memo } from '@/server/lib/memo';
 import { scoreRecency } from '@/server/images/recency';
-import { largerVariants } from '@/server/images/variants';
+import { canonicalImageKey, largerVariants } from '@/server/images/variants';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
 /**
@@ -68,6 +68,81 @@ export interface ProcessInput {
   cachedEnrichment?: ProductEnrichment | null;
   /** Cap on how many candidates get downloaded before giving up. */
   maxDownloads?: number;
+  /**
+   * How hard to try, for a row that has already come back empty once.
+   *
+   * Retrying a product identically is not a retry, it is the same request with
+   * the same answer — so each pass has to change something. The ladder widens
+   * the search first and lowers the bar only at the end, because a wider search
+   * can still find the right picture while a lower bar can only ever accept a
+   * worse one.
+   */
+  effort?: Effort;
+}
+
+export type Effort = 'normal' | 'wider' | 'lenient';
+
+const DEFAULT_MAX_DOWNLOADS = 5;
+const CANDIDATE_LIMIT = 12;
+
+interface EffortSettings {
+  maxDownloads: number;
+  candidateLimit: number;
+  /** Always consult the open web, even when the barcode tier looked fine. */
+  forceWeb: boolean;
+  /** Floor a downloaded image must clear. */
+  minQuality: number;
+  /** Accept a usable-but-poor image, flagged, rather than returning nothing. */
+  acceptMarginal: boolean;
+}
+
+export const EFFORT: Record<Effort, EffortSettings> = {
+  normal: {
+    maxDownloads: DEFAULT_MAX_DOWNLOADS,
+    candidateLimit: CANDIDATE_LIMIT,
+    forceWeb: false,
+    minQuality: MINIMUM_QUALITY_THRESHOLD,
+    acceptMarginal: false,
+  },
+  // Same standards, more places looked and more candidates weighed. Most
+  // second-pass successes come from here: the first pass simply stopped early.
+  wider: {
+    maxDownloads: 10,
+    candidateLimit: 24,
+    forceWeb: true,
+    minQuality: MINIMUM_QUALITY_THRESHOLD,
+    acceptMarginal: false,
+  },
+  // Last pass. The bar drops to what is still recognisably a product photo,
+  // and anything taken at this level is handed back marked for review rather
+  // than presented as a confident answer.
+  lenient: {
+    maxDownloads: 10,
+    candidateLimit: 24,
+    forceWeb: true,
+    minQuality: 0.12,
+    acceptMarginal: true,
+  },
+};
+
+/**
+ * What an empty row is tried at, in order, before it is called a failure.
+ *
+ * Lives here, beside the settings it names, because both runners walk it — the
+ * guest path as a loop and the account path from a product's attempt counter —
+ * and a ladder defined twice is a ladder that will eventually differ.
+ */
+export const EFFORT_LADDER = ['normal', 'wider', 'lenient'] as const satisfies readonly Effort[];
+
+/**
+ * The rung for a given pass. `attempts` has already been incremented for the
+ * pass about to run, and it clamps: a manual retry of a row that has already
+ * exhausted the ladder runs at the most forgiving setting rather than failing
+ * on an index.
+ */
+export function effortForAttempt(attempts: number): Effort {
+  const index = Math.min(Math.max(attempts, 1), EFFORT_LADDER.length) - 1;
+  return EFFORT_LADDER[index]!;
 }
 
 export interface EvaluatedCandidate {
@@ -79,8 +154,37 @@ export interface EvaluatedCandidate {
   selected: boolean;
 }
 
+/**
+ * A second image that was a real contender for the same product.
+ *
+ * Ranking already picks the most accurate of several plausible photographs, but
+ * "most accurate" is a score, and when the scores are close the person filling
+ * the catalog is better placed to judge than the number is. Keeping the runner
+ * up means an uncertain row can offer a swap instead of only accept-or-empty.
+ *
+ * Deliberately just a URL and its scores: rendering every contender would
+ * multiply the memory a batch holds, for pictures nobody may ever ask to see.
+ * The swap renders on demand, usually straight out of the render cache.
+ */
+export interface Alternative {
+  sourceUrl: string;
+  provider: string;
+  matchScore: number;
+  qualityScore: number;
+}
+
+/** How many contenders are worth keeping. Two choices is a decision; six is a search. */
+const MAX_ALTERNATIVES = 2;
+
 interface SuccessOutcome {
   status: 'succeeded';
+  /**
+   * An image was produced but is not a confident answer — it cleared only the
+   * relaxed bar of a final retry. Worth showing to somebody, not worth filing
+   * silently.
+   */
+  needsReview?: boolean;
+  reviewReason?: string;
   kind: 'REAL' | 'AI_GENERATED' | 'USER_PROVIDED';
   render: RenderResult;
   enrichment: ProductEnrichment;
@@ -90,6 +194,8 @@ interface SuccessOutcome {
   sourceUrl?: string;
   matchScore: number;
   qualityScore: number;
+  /** Other credible images of the same product, best first. */
+  alternatives: Alternative[];
   candidates: EvaluatedCandidate[];
   log: string[];
 }
@@ -105,8 +211,6 @@ interface FailureOutcome {
 
 export type ProcessOutcome = SuccessOutcome | FailureOutcome;
 
-const DEFAULT_MAX_DOWNLOADS = 5;
-const CANDIDATE_LIMIT = 12;
 
 /**
  * Rendered images, keyed by where they came from and how they were rendered.
@@ -131,6 +235,41 @@ const renderedImages = new Memo<RememberedImage>({ ttlMs: 60 * 60_000, max: 40 }
 /** Test hook: forget rendered images. */
 export function resetRenderMemo(): void {
   renderedImages.clear();
+}
+
+/**
+ * Render one specific image, for somebody who has looked at the choice the
+ * pipeline made and wants the other one.
+ *
+ * No search, no scoring, no verification: the candidate was already downloaded,
+ * scored and cleared during processing, and the person asking has now seen it.
+ * Usually this is a cache hit and returns without touching the network.
+ */
+export async function renderAlternative(
+  sourceUrl: string,
+  options: RenderOptions,
+): Promise<{ render: RenderResult; qualityScore: number }> {
+  const remembered = renderedImages.get(renderKey(sourceUrl, options));
+  if (remembered) return { render: remembered.render, qualityScore: remembered.qualityScore };
+
+  const { buffer } = await downloadAndPrepare(sourceUrl);
+  const analysis = await analyseImage(buffer);
+  const quality = scoreQuality({
+    width: analysis.width,
+    height: analysis.height,
+    bytes: buffer.byteLength,
+    borderVariance: analysis.borderVariance,
+    foregroundRatio: analysis.foregroundRatio,
+    detail: analysis.detail,
+    hasAlpha: analysis.hasAlpha,
+    overlayShare: analysis.overlayShare,
+  });
+
+  const prepared = await maybeHostedCutout(buffer, options, []);
+  const render = await renderProductImage({ buffer: prepared, options });
+
+  renderedImages.set(renderKey(sourceUrl, options), { render, qualityScore: quality.score });
+  return { render, qualityScore: quality.score };
 }
 
 /** What actually determines the output, so nothing stale is ever served. */
@@ -164,7 +303,12 @@ function isPlaceholderName(name: string, upc?: string | null, sku?: string | nul
 export async function processProduct(input: ProcessInput): Promise<ProcessOutcome> {
   const log: string[] = [];
   const { product, options } = input;
+  const effort = EFFORT[input.effort ?? 'normal'];
+  const maxDownloads = input.maxDownloads ?? effort.maxDownloads;
   const evaluated: EvaluatedCandidate[] = [];
+  if (input.effort && input.effort !== 'normal') {
+    log.push(`Retrying at "${input.effort}" effort`);
+  }
 
   // --- 1. Resolve the barcode --------------------------------------------
   // Runs before identification so the model is reasoning about a real product
@@ -184,7 +328,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       brand: product.brand,
       model: product.model,
       enrichment: provisional,
-      limit: CANDIDATE_LIMIT,
+      limit: effort.candidateLimit,
     });
 
     for (const error of lookup.errors) {
@@ -241,7 +385,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     brand: resolved.brand,
     model: resolved.model,
     enrichment,
-    limit: CANDIDATE_LIMIT,
+    limit: effort.candidateLimit,
   };
 
   // --- 3. Try the barcode images first ------------------------------------
@@ -252,7 +396,8 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
     options,
     evaluated,
     log,
-    maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
+    maxDownloads,
+    minQuality: effort.minQuality,
   });
 
   // --- 4. Go to the open web ----------------------------------------------
@@ -275,7 +420,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
 
   let searchedWeb = false;
   let webErrors: Array<{ provider: string; message: string }> = [];
-  if (!goodEnough(best) || (options.preferNewest && barcodeImageLooksArchival)) {
+  if (!goodEnough(best) || effort.forceWeb || (options.preferNewest && barcodeImageLooksArchival)) {
     searchedWeb = true;
 
     // Now it is worth a model call: we are about to search the open web, where
@@ -309,7 +454,8 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       options,
       evaluated,
       log,
-      maxDownloads: input.maxDownloads ?? DEFAULT_MAX_DOWNLOADS,
+      maxDownloads,
+      minQuality: effort.minQuality,
       incumbent: best,
     });
 
@@ -365,8 +511,19 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       );
       if (winner) winner.selected = true;
 
+      // Anything that only cleared the relaxed bar of a final retry is handed
+      // back flagged. It is a better outcome than an empty cell, but it is a
+      // judgement somebody should look at rather than a confident answer.
+      const marginal =
+        effort.acceptMarginal && best.qualityScore < MINIMUM_QUALITY_THRESHOLD;
+
       return {
         status: 'succeeded',
+        needsReview: marginal || undefined,
+        reviewReason: marginal
+          ? `Only a low-quality image could be found (score ${best.qualityScore.toFixed(2)}). ` +
+            'It is here so the row is not empty, but check it before you use it.'
+          : undefined,
         kind: best.candidate.provider === 'spreadsheet' ? 'USER_PROVIDED' : 'REAL',
         render,
         enrichment,
@@ -375,6 +532,7 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
         sourceUrl: best.candidate.sourceUrl,
         matchScore: best.matchScore,
         qualityScore: best.qualityScore,
+        alternatives: collectAlternatives(evaluated, best.candidate.sourceUrl),
         candidates: evaluated,
         log,
       };
@@ -486,6 +644,9 @@ export async function processProduct(input: ProcessInput): Promise<ProcessOutcom
       // A generated image is clean by construction, but it is not the real
       // product, so it never scores as highly as a verified photograph.
       qualityScore: 0.7,
+      // Nothing to offer: generation only runs once every real photograph has
+      // already been rejected, so the runners-up are the ones that failed.
+      alternatives: [],
       candidates: evaluated,
       log,
     };
@@ -592,6 +753,8 @@ interface EvaluateArgs {
   evaluated: EvaluatedCandidate[];
   log: string[];
   maxDownloads: number;
+  /** Floor a downloaded image must clear, which the retry ladder lowers. */
+  minQuality: number;
   incumbent?: Winner | null;
 }
 
@@ -606,6 +769,48 @@ interface EvaluateArgs {
  */
 function overallScore(match: number, quality: number, recency: number): number {
   return match * 0.6 + quality * 0.25 + recency * 0.15;
+}
+
+/**
+ * The runners-up worth offering as a different answer.
+ *
+ * Only candidates that were downloaded and scored — a candidate that never got
+ * that far has an unverified guess for a match score, and offering it would be
+ * offering a URL rather than a photograph. Rejected ones are excluded for the
+ * same reason: they failed a check that has not stopped applying.
+ *
+ * Near-duplicates of the winner and of each other collapse, so two entries mean
+ * two pictures.
+ */
+export function collectAlternatives(
+  evaluated: EvaluatedCandidate[],
+  winnerUrl: string,
+): Alternative[] {
+  const seen = new Set([canonicalImageKey(winnerUrl)]);
+  const alternatives: Alternative[] = [];
+
+  const contenders = evaluated
+    .filter((entry) => !entry.rejected && !entry.selected && entry.qualityScore > 0)
+    .sort(
+      (a, b) =>
+        overallScore(b.matchScore, b.qualityScore, 0) -
+        overallScore(a.matchScore, a.qualityScore, 0),
+    );
+
+  for (const entry of contenders) {
+    const key = canonicalImageKey(entry.candidate.sourceUrl);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    alternatives.push({
+      sourceUrl: entry.candidate.sourceUrl,
+      provider: entry.candidate.provider,
+      matchScore: entry.matchScore,
+      qualityScore: entry.qualityScore,
+    });
+    if (alternatives.length >= MAX_ALTERNATIVES) break;
+  }
+
+  return alternatives;
 }
 
 /**
@@ -766,7 +971,7 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
         overlayShare: analysis.overlayShare,
       });
 
-      if (quality.rejected || quality.score < MINIMUM_QUALITY_THRESHOLD) {
+      if (quality.rejected || quality.score < args.minQuality) {
         evaluated.push({
           candidate,
           matchScore: assessment.score,

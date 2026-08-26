@@ -79,7 +79,12 @@ export async function createZip(batchId: string): Promise<{ buffer: Buffer; imag
       description: product.description,
       price: product.price ? Number(product.price) : null,
       facts: (product.facts as unknown as ProductFacts | null) ?? null,
-      succeeded: product.status === ProductStatus.SUCCEEDED,
+      outcome:
+        product.status === ProductStatus.SUCCEEDED
+          ? 'ok'
+          : product.status === ProductStatus.NEEDS_REVIEW
+            ? 'needs_review'
+            : 'failed',
       errorMessage: product.errorMessage,
       image: image
         ? {

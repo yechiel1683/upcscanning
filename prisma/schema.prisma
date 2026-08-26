@@ -156,6 +156,10 @@ enum ProductStatus {
   PENDING
   PROCESSING
   SUCCEEDED
+  // An image was found, but not one the pipeline is willing to vouch for on its
+  // own — the last rung of the retry ladder accepts a weaker match rather than
+  // returning nothing, and a person decides whether it is the right product.
+  NEEDS_REVIEW
   FAILED
   SKIPPED
 }
@@ -189,6 +193,9 @@ model Product {
   status       ProductStatus @default(PENDING)
   attempts     Int           @default(0)
   errorMessage String?
+  // Why a NEEDS_REVIEW row is uncertain, in the customer's language. Shown
+  // beside the image so the decision is an informed one.
+  reviewReason String?
   // Populated by the LLM enrichment step: canonical product title, search
   // queries, and a generation prompt.
   enrichment   Json?

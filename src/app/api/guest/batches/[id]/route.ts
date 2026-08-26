@@ -16,10 +16,16 @@ export async function GET(_request: Request, { params }: Params) {
     const batch = findGuestBatch(session, id);
     if (!batch) return notFound('Batch');
 
-    const counts = { PENDING: 0, PROCESSING: 0, SUCCEEDED: 0, FAILED: 0 };
+    const counts = {
+      PENDING: 0,
+      PROCESSING: 0,
+      SUCCEEDED: 0,
+      NEEDS_REVIEW: 0,
+      FAILED: 0,
+    };
     for (const product of batch.products) counts[product.status] += 1;
 
-    const finished = counts.SUCCEEDED + counts.FAILED;
+    const finished = counts.SUCCEEDED + counts.NEEDS_REVIEW + counts.FAILED;
     const total = batch.products.length;
 
     return ok({
@@ -50,6 +56,16 @@ export async function GET(_request: Request, { params }: Params) {
         brand: product.brand ?? null,
         status: product.status,
         errorMessage: product.errorMessage,
+        reviewReason: product.reviewReason,
+        attempts: product.attempts,
+        // Enough to offer the swap: what it is and how well it scored. The
+        // bytes stay on the server until somebody actually asks for them.
+        alternatives: product.alternatives.map((option) => ({
+          sourceUrl: option.sourceUrl,
+          provider: option.provider,
+          matchScore: option.matchScore,
+          qualityScore: option.qualityScore,
+        })),
         outputName: product.outputName,
         detailsSource: product.facts?.source ?? null,
         image: product.image

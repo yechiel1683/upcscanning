@@ -38,6 +38,7 @@ export const GET = withUser(async (user, _request, { params }: Params) => {
       status: product.status,
       attempts: product.attempts,
       errorMessage: product.errorMessage,
+      reviewReason: product.reviewReason,
       enrichment: product.enrichment,
       outputName: product.outputName,
       processedAt: product.processedAt,

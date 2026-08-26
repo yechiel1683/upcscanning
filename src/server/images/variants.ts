@@ -103,6 +103,40 @@ export function largerVariants(sourceUrl: string): string[] {
   return variants.slice(0, 2);
 }
 
+/**
+ * A key that is the same for two URLs pointing at the same photograph.
+ *
+ * The same picture reaches this pipeline from several providers at several
+ * sizes — a 400px render from one database and the master from another are one
+ * image, not two. Offering both as "alternatives" would present somebody with
+ * the same photograph twice and ask them to choose, which reads as a bug.
+ *
+ * Built from the same knowledge as the upgrade rules: strip whatever encodes a
+ * size, keep what identifies the asset. Two different photographs from the same
+ * host keep different paths and so keep different keys.
+ */
+export function canonicalImageKey(sourceUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(sourceUrl);
+  } catch {
+    return sourceUrl.trim().toLowerCase();
+  }
+
+  url.pathname = url.pathname
+    .replace(/\.(?:\d{2,4}|full)(\.(?:jpg|jpeg|png|webp))$/i, '$1')
+    .replace(/\._[A-Za-z0-9_,]+_\.(jpg|jpeg|png|webp)$/i, '.$1')
+    .replace(/_(\d{2,4})x(\d{2,4})?(\.(?:jpg|jpeg|png|webp))$/i, '$3');
+
+  for (const key of [...GENERIC_SIZE_PARAMS, 'odnHeight', 'odnWidth', 'wid', 'hei']) {
+    for (const name of [key, key.toUpperCase()]) url.searchParams.delete(name);
+  }
+
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  const query = url.searchParams.toString();
+  return `${host}${url.pathname.toLowerCase()}${query ? `?${query}` : ''}`;
+}
+
 /** `front_en.4.400.jpg` -> `front_en.4.full.jpg` */
 function sizeSegmentToFull(url: URL): string | null {
   const replaced = url.pathname.replace(

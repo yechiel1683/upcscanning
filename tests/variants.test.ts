@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { largerVariants } from '@/server/images/variants';
+import { canonicalImageKey, largerVariants } from '@/server/images/variants';
 
 /**
  * This is string surgery on other people's URLs, which fails in two directions.
@@ -128,5 +128,68 @@ describe('largerVariants', () => {
       'https://i5.walmartimages.com/asr/abc.jpeg?odnHeight=180&odnWidth=180&w=100&h=100&size=50',
     );
     expect(many.length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('canonicalImageKey', () => {
+  /**
+   * The same photograph reaches this pipeline from several providers at several
+   * sizes. Offering both as "alternatives" would show somebody one picture
+   * twice and ask them to choose, which reads as a bug rather than a choice.
+   */
+
+  it('collapses the sizes of one Open Food Facts image', () => {
+    const small =
+      'https://images.openfoodfacts.org/images/products/002/840/019/9148/front_en.4.400.jpg';
+    const full =
+      'https://images.openfoodfacts.org/images/products/002/840/019/9148/front_en.4.full.jpg';
+    expect(canonicalImageKey(small)).toBe(canonicalImageKey(full));
+  });
+
+  it('collapses Amazon transforms of one asset', () => {
+    expect(canonicalImageKey('https://m.media-amazon.com/images/I/71abc._SL160_.jpg')).toBe(
+      canonicalImageKey('https://m.media-amazon.com/images/I/71abc.jpg'),
+    );
+  });
+
+  it('collapses render sizes asked for in the query string', () => {
+    expect(
+      canonicalImageKey('https://i5.walmartimages.com/asr/abc.jpeg?odnHeight=180&odnWidth=180'),
+    ).toBe(canonicalImageKey('https://i5.walmartimages.com/asr/abc.jpeg?odnHeight=2000'));
+    expect(canonicalImageKey('https://cdn.x.example/a.jpg?w=200&h=200')).toBe(
+      canonicalImageKey('https://cdn.x.example/a.jpg'),
+    );
+  });
+
+  it('collapses a Shopify size suffix', () => {
+    expect(canonicalImageKey('https://cdn.shopify.com/s/files/1/x/bottle_180x180.jpg')).toBe(
+      canonicalImageKey('https://cdn.shopify.com/s/files/1/x/bottle.jpg'),
+    );
+  });
+
+  it('keeps two genuinely different photographs apart', () => {
+    // The failure that matters in the other direction: collapsing everything
+    // would hide the real second option and leave a review row with no way out
+    // but rejection.
+    expect(
+      canonicalImageKey('https://images.openfoodfacts.org/p/1/front_en.4.400.jpg'),
+    ).not.toBe(canonicalImageKey('https://images.openfoodfacts.org/p/1/front_fr.7.400.jpg'));
+    expect(canonicalImageKey('https://a.example/x.jpg')).not.toBe(
+      canonicalImageKey('https://b.example/x.jpg'),
+    );
+    expect(canonicalImageKey('https://m.media-amazon.com/images/I/71abc.jpg')).not.toBe(
+      canonicalImageKey('https://m.media-amazon.com/images/I/81xyz.jpg'),
+    );
+  });
+
+  it('ignores a www prefix and letter case', () => {
+    expect(canonicalImageKey('https://WWW.Example.com/A.JPG')).toBe(
+      canonicalImageKey('https://example.com/a.jpg'),
+    );
+  });
+
+  it('does not throw on input that is not a URL', () => {
+    expect(canonicalImageKey('not a url')).toBe('not a url');
+    expect(canonicalImageKey('')).toBe('');
   });
 });

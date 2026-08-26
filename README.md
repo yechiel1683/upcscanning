@@ -107,6 +107,39 @@ is always a guess and never a replacement: the original is still tried, so a
 host that changed its scheme costs one wasted request rather than a product. The
 export names whichever URL actually served the bytes.
 
+**An empty row is retried before it is called a failure.** The search stops at
+the first good image by design, which means a row that came back empty usually
+stopped too early rather than proving no photograph exists. Every empty row is
+picked up again automatically, without anybody pressing anything, and put
+through an escalating ladder:
+
+| Pass | What changes |
+| --- | --- |
+| `normal` | Barcode tier first, 5 downloads, 12 candidates |
+| `wider` | The open web every time, 10 downloads, 24 candidates |
+| `lenient` | Same reach, but accepts a poor image rather than nothing — flagged |
+
+Three passes and no more. Each rung has to *change* something to earn its API
+call, and after the last one there is nothing left to vary: running it again
+would be the same request expecting a different answer, on somebody's metered
+key.
+
+**A weak answer is a question, not a filing.** Anything that only cleared the
+relaxed bar of that last pass comes back as **needs review** rather than
+silently joining the finished images. It ships in the ZIP — it is a real
+picture, and withholding it would make the flag worse than useless — marked
+`check this one` in the CSV and counted separately in the report. In the app it
+carries the reason it is uncertain and two buttons.
+
+**When two pictures are in the running, the better one wins and the other is
+offered.** Ranking already picks the most accurate of several plausible
+photographs, but that is a score, and when the scores are close the person
+filling the catalog judges better than the number does. So a review row lists
+the runner-up and swaps to it on one click, rendering on demand — usually
+straight out of the render cache. Only candidates that were actually downloaded,
+scored and cleared are offered; near-duplicates collapse, so two entries mean
+two pictures rather than one picture at two sizes.
+
 **One consistent look.** Sourced and generated images go through the same
 pipeline — cutout, framing, background, contact shadow, resize, encode — so a
 catalog assembled from a dozen different websites looks like one photoshoot.
@@ -163,8 +196,14 @@ npm install && npm run dev     # open /try
 Paste barcodes or drop a spreadsheet and the real pipeline runs — same
 identification, same search, same renderer, same ZIP. The differences are that
 results live in memory for a few hours instead of Postgres, and a guest session
-is capped (25 images, 25 products per batch) because unbounded in-memory state
+is capped (100 images, 100 products per batch) because unbounded in-memory state
 on a public endpoint is a denial-of-service waiting to happen.
+
+The cap that actually protects the container is bytes, not sessions. A guest
+holds finished JPEGs in this process's memory, so a count ceiling stopped
+meaning anything the moment a session went from twenty-five images to a hundred;
+guests share a total image budget, and over it the least recently active
+sessions are dropped whole rather than left half-missing.
 
 The deliverable is assembled by the same code either way, so a guest ZIP and an
 account ZIP are byte-identical apart from a note in the report.
@@ -528,6 +567,7 @@ Authenticate with a session cookie or `Authorization: Bearer <api-key>`
 | `POST` | `/api/batches/:id/export` | Build the ZIP |
 | `GET` | `/api/exports/:id/download` | Stream the finished ZIP |
 | `GET` | `/api/products/:id` | One product with its full candidate audit trail |
+| `POST` | `/api/products/:id/confirm` | Settle a `NEEDS_REVIEW` row (`{"accept": true｜false}`) |
 | `GET` | `/api/images/:id/file` | Serve a rendered image |
 | `GET` | `/api/system/status` | Which providers are configured |
 | `GET` | `/api/health` | Liveness probe |

@@ -24,7 +24,11 @@ export async function GET(_request: Request, { params }: Params) {
     const batch = findGuestBatch(session, id);
     if (!batch) return notFound('Batch');
 
-    const ready = batch.products.filter((product) => product.status === 'SUCCEEDED');
+    // A row still awaiting a decision has a real image, and holding the whole
+    // download hostage to it would be worse than shipping it marked.
+    const ready = batch.products.filter(
+      (product) => product.status === 'SUCCEEDED' || product.status === 'NEEDS_REVIEW',
+    );
     if (ready.length === 0) return fail('There are no finished images to export yet.', 409);
 
     // Cached on the batch so a second download does not rebuild it.

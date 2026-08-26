@@ -93,6 +93,20 @@ searched even though that image would have been good enough — which costs a
 search on a first run and nothing on a repeat. Turn `preferNewest` off per
 batch to take the first acceptable image instead.
 
+**The full-size picture, not the thumbnail of it.** A barcode database rarely
+stores product photography — it stores a *thumbnail* of product photography,
+because that is what its own page needed, and the size is baked into the URL.
+Open Food Facts serves its `display` variant at 400px on the long edge, which
+for a tall wrapper is 185x400: below the resolution floor, rejected, and the row
+comes back empty with the master sitting one string substitution away.
+
+Every one of these hosts encodes the requested size in the URL, so the larger
+version is asked for first — `front_en.4.400.jpg` becomes `front_en.4.full.jpg`,
+an Amazon `._SL160_.` transform is stripped, Walmart's `odnWidth` is raised. It
+is always a guess and never a replacement: the original is still tried, so a
+host that changed its scheme costs one wasted request rather than a product. The
+export names whichever URL actually served the bytes.
+
 **One consistent look.** Sourced and generated images go through the same
 pipeline — cutout, framing, background, contact shadow, resize, encode — so a
 catalog assembled from a dozen different websites looks like one photoshoot.

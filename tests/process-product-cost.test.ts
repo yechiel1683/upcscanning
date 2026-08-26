@@ -347,6 +347,63 @@ describe('choosing between two real photographs of the right product', () => {
   });
 });
 
+describe('a barcode database that only stored a thumbnail', () => {
+  const thumbnail =
+    'https://images.openfoodfacts.org/images/products/002/840/019/9148/front_en.4.400.jpg';
+  const master =
+    'https://images.openfoodfacts.org/images/products/002/840/019/9148/front_en.4.full.jpg';
+
+  function offCandidate(): SearchCandidate {
+    return {
+      provider: 'openfoodfacts',
+      sourceUrl: thumbnail,
+      providerConfidence: 0.9,
+      title: 'Duracell Coppertop AA Batteries 8 Pack',
+    } as SearchCandidate;
+  }
+
+  beforeEach(() => {
+    lookupBarcodeCached.mockResolvedValue({
+      candidates: [offCandidate()],
+      facts,
+      errors: [],
+      providers: ['openfoodfacts'],
+    });
+  });
+
+  it('asks for the full-size image before settling for the small one', async () => {
+    // The stored URL is a 400px render — for a tall wrapper that is 185x400,
+    // below the resolution floor, so the product failed with photography
+    // sitting one substitution away.
+    await processProduct(input);
+
+    expect(fetchBinary).toHaveBeenCalled();
+    expect((fetchBinary.mock.calls[0] as [string])[0]).toBe(master);
+  });
+
+  it('reports the URL that actually served the bytes', async () => {
+    const outcome = await processProduct(input);
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status === 'succeeded') expect(outcome.sourceUrl).toBe(master);
+  });
+
+  it('falls back to the original when the larger one is not there', async () => {
+    // The upgrade is a guess about someone else's CDN. Being wrong must cost a
+    // wasted request, not the product.
+    const jpeg = Buffer.alloc(400_000, 0x7f);
+    jpeg.set([0xff, 0xd8, 0xff, 0xe0], 0);
+    fetchBinary.mockImplementation(async (url: string) => {
+      if (url === master) throw new Error('Image host returned 404');
+      return { buffer: jpeg, contentType: 'image/jpeg', lastModified: null };
+    });
+
+    const outcome = await processProduct(input);
+
+    expect(outcome.status).toBe('succeeded');
+    if (outcome.status === 'succeeded') expect(outcome.sourceUrl).toBe(thumbnail);
+  });
+});
+
 describe('saying why a product failed', () => {
   const deadLink = {
     candidates: [candidate('a')],

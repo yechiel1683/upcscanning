@@ -30,6 +30,7 @@ import {
 } from '@/server/providers/search';
 import { Memo } from '@/server/lib/memo';
 import { scoreRecency } from '@/server/images/recency';
+import { largerVariants } from '@/server/images/variants';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
 /**
@@ -715,9 +716,15 @@ async function evaluateCandidates(args: EvaluateArgs): Promise<Winner | null> {
     const results = await Promise.all(
       wave.map(async ({ candidate, assessment }) => {
         try {
-          const { buffer, lastModified } = await downloadAndPrepare(candidate.sourceUrl);
+          const { buffer, lastModified, usedUrl } = await downloadAndPrepare(candidate.sourceUrl);
           const analysis = await analyseImage(buffer);
-          return { candidate, assessment, source: buffer, lastModified, analysis, error: null };
+          // Provenance follows the bytes: the export and the audit trail should
+          // name the URL that actually served the image, not the one we asked
+          // about first.
+          const served = usedUrl === candidate.sourceUrl
+            ? candidate
+            : { ...candidate, sourceUrl: usedUrl };
+          return { candidate: served, assessment, source: buffer, lastModified, analysis, error: null };
         } catch (error) {
           return {
             candidate,
@@ -835,9 +842,39 @@ const ACCEPTED_IMAGE_TYPES = new Set([
   'image/tiff',
 ]);
 
+/**
+ * Fetch a candidate, asking for the full-size version first.
+ *
+ * A barcode database stores a thumbnail because that is what its own page
+ * needed, and the size is in the URL. Taking it at face value is how a product
+ * with perfectly good photography behind it gets reported as having none: a
+ * 185x400 render of a granola bar is below the resolution floor, so it is
+ * rejected, and so is every other thumbnail of the same picture.
+ *
+ * The larger URL is a guess, so it is only ever tried *before* the original and
+ * never instead of it. A host that has changed its scheme costs one wasted
+ * request; the original is still fetched and the product still succeeds.
+ */
 async function downloadAndPrepare(
   url: string,
-): Promise<{ buffer: Buffer; lastModified: string | null }> {
+): Promise<{ buffer: Buffer; lastModified: string | null; usedUrl: string }> {
+  const attempts = [...largerVariants(url), url];
+  let lastError: unknown;
+
+  for (const attempt of attempts) {
+    try {
+      return await downloadOne(attempt);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
+async function downloadOne(
+  url: string,
+): Promise<{ buffer: Buffer; lastModified: string | null; usedUrl: string }> {
   const { buffer, contentType, lastModified } = await fetchBinary(url, {
     maxBytes: env().MAX_IMAGE_DOWNLOAD_BYTES,
   });
@@ -852,7 +889,7 @@ async function downloadAndPrepare(
     throw new Error('Response did not contain image data');
   }
 
-  return { buffer, lastModified };
+  return { buffer, lastModified, usedUrl: url };
 }
 
 function looksLikeImage(buffer: Buffer): boolean {

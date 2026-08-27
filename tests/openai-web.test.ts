@@ -237,3 +237,160 @@ describe('openAiWebProvider results', () => {
     expect(body.tools[0]?.type).toBe('web_search');
   });
 });
+
+describe('reading the product pages the model names', () => {
+  /**
+   * The reason this exists: a model cannot reproduce a retailer's image URL. It
+   * contains an opaque id, so a model that has read the page reconstructs
+   * something that looks right and 404s — arriving here as an HTML error page,
+   * or as nothing. Which page the product is on, it knows reliably. So the
+   * pages get opened and asked what images they publish about themselves.
+   */
+
+  /** Reply as a web server would, with an HTML body. */
+  function mockPage(html: string) {
+    return {
+      ok: true,
+      status: 200,
+      url: '',
+      headers: new Headers({ 'content-type': 'text/html; charset=utf-8' }),
+      body: null,
+      arrayBuffer: async () => new TextEncoder().encode(html).buffer,
+    } as unknown as Response;
+  }
+
+  /** First call is the model; every later call is a page fetch. */
+  function stubBrowseThenPages(payload: unknown, pages: Record<string, string>) {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.includes('api.openai.com')) return mockReply(payload);
+        const html = pages[url];
+        if (html === undefined) throw new Error(`unexpected fetch: ${url}`);
+        return mockPage(html);
+      }),
+    );
+    return calls;
+  }
+
+  it('takes the images a page states when the model gives no image URLs', async () => {
+    stubBrowseThenPages(
+      {
+        pageUrls: ['https://shop.example.com/p/pepsi'],
+        imageUrls: [],
+        confidence: 0.9,
+      },
+      {
+        'https://shop.example.com/p/pepsi':
+          '<meta property="og:image" content="https://cdn.example.com/pepsi-real.jpg">',
+      },
+    );
+
+    const result = await openAiWebProvider.search(context);
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.sourceUrl).toBe('https://cdn.example.com/pepsi-real.jpg');
+    // Provenance points at the listing it came from, which is what makes the
+    // export auditable.
+    expect(result.candidates[0]?.pageUrl).toBe('https://shop.example.com/p/pepsi');
+  });
+
+  it('ranks a page-published image above one the model typed out', async () => {
+    // One exists because a retailer said so; the other because a model recalled
+    // it. That difference is the whole point, so it has to reach the ranking.
+    stubBrowseThenPages(
+      {
+        pageUrls: ['https://shop.example.com/p/pepsi'],
+        imageUrls: ['https://cdn.example.com/remembered.jpg'],
+        confidence: 0.9,
+      },
+      {
+        'https://shop.example.com/p/pepsi':
+          '<meta property="og:image" content="https://cdn.example.com/published.jpg">',
+      },
+    );
+
+    const result = await openAiWebProvider.search(context);
+    const remembered = result.candidates.find((c) => c.sourceUrl.includes('remembered'));
+    const published = result.candidates.find((c) => c.sourceUrl.includes('published'));
+
+    expect(published!.providerConfidence).toBeGreaterThan(remembered!.providerConfidence);
+  });
+
+  it('reads several retailers rather than emptying the budget on one', async () => {
+    // Disagreement between retailers is what makes a choice meaningful, and it
+    // is also how a discontinued listing gets outvoted by a current one. A page
+    // that publishes a gallery must not consume the whole candidate budget
+    // before the second retailer is looked at, so the first image of every page
+    // is taken before the second image of any of them.
+    const gallery = (host: string) =>
+      `<script type="application/ld+json">{"@type":"Product","image":[
+        "https://${host}/1.jpg","https://${host}/2.jpg","https://${host}/3.jpg",
+        "https://${host}/4.jpg","https://${host}/5.jpg","https://${host}/6.jpg"]}</script>`;
+
+    stubBrowseThenPages(
+      {
+        pageUrls: [
+          'https://a.example.com/p',
+          'https://b.example.com/p',
+          'https://c.example.com/p',
+        ],
+        confidence: 0.8,
+      },
+      {
+        'https://a.example.com/p': gallery('cdn.a'),
+        'https://b.example.com/p': gallery('cdn.b'),
+        'https://c.example.com/p': gallery('cdn.c'),
+      },
+    );
+
+    // The limit is 6 and each page alone could fill it twice over.
+    const result = await openAiWebProvider.search(context);
+    const hosts = result.candidates.map((c) => new URL(c.sourceUrl).hostname);
+    expect(new Set(hosts).size).toBe(3);
+    // And the very first candidates are one from each, not three from the first.
+    expect(hosts.slice(0, 3)).toEqual(['cdn.a', 'cdn.b', 'cdn.c']);
+  });
+
+  it('shrugs off a retailer that blocks the fetch', async () => {
+    // A page that 403s a server-side request is normal and says nothing about
+    // the product. The other pages, and the barcode tier, are still there.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: unknown) => {
+        const url = String(input);
+        if (url.includes('api.openai.com')) {
+          return mockReply({
+            pageUrls: ['https://blocked.example.com/p', 'https://open.example.com/p'],
+            confidence: 0.8,
+          });
+        }
+        if (url.includes('blocked')) throw new Error('403');
+        return mockPage('<meta property="og:image" content="https://cdn.open/1.jpg">');
+      }),
+    );
+
+    const result = await openAiWebProvider.search(context);
+    expect(result.candidates.map((c) => c.sourceUrl)).toEqual(['https://cdn.open/1.jpg']);
+  });
+
+  it('does not open pages when the model already gave enough real images', async () => {
+    // Page reads are extra requests. Once the candidate budget is full they buy
+    // nothing, and paying for them on every product of a large batch adds up.
+    const calls = stubBrowseThenPages(
+      {
+        pageUrls: ['https://shop.example.com/p/pepsi'],
+        imageUrls: Array.from({ length: 6 }, (_, i) => `https://cdn.example.com/${i}.jpg`),
+        confidence: 0.9,
+      },
+      {},
+    );
+
+    const result = await openAiWebProvider.search(context);
+    expect(result.candidates).toHaveLength(6);
+    expect(calls.filter((url) => !url.includes('api.openai.com'))).toEqual([]);
+  });
+});

@@ -1,6 +1,7 @@
 import { env } from '@/lib/env';
 import type { ProductFacts, SearchCandidate, SearchResult } from '@/lib/types';
-import { fetchJson, HttpError, withRetry } from '@/server/lib/http';
+import { extractPageImages } from '@/server/images/page-images';
+import { fetchBinary, fetchJson, HttpError, withRetry } from '@/server/lib/http';
 import type { SearchProvider } from './types';
 
 /**
@@ -12,9 +13,17 @@ import type { SearchProvider } from './types';
  * than found. Here the same key drives the search tier as well, which is what
  * makes "give it any barcode and get the real product" work with one account.
  *
- * The model is asked to browse for the product and report direct image URLs.
- * Everything it returns is treated as an ordinary untrusted candidate: scored,
- * downloaded through the SSRF-guarded fetcher, and verified like any other.
+ * The model is asked for product *pages* first and image URLs only where it
+ * actually saw them. That split is the whole design: a retailer's image URL is
+ * a long opaque path with an id in it, so a model that has read the page will
+ * reconstruct something that looks exactly right and does not exist — which
+ * arrives here as an HTML error page, or as nothing. Which page the product is
+ * on, it knows. So the pages are opened and asked what images they claim, and
+ * the answer comes from the retailer's own metadata rather than from recall.
+ *
+ * Everything either route produces is treated as an ordinary untrusted
+ * candidate: scored, downloaded through the SSRF-guarded fetcher, and verified
+ * like any other.
  */
 
 interface ResponsesOutputContent {
@@ -35,6 +44,7 @@ interface ResponsesApiResponse {
 
 interface ModelFinding {
   imageUrls?: unknown;
+  pageUrls?: unknown;
   pageUrl?: unknown;
   title?: unknown;
   brand?: unknown;
@@ -51,9 +61,12 @@ site, then a major retailer (Amazon, Walmart, Target, Best Buy, Home Depot).
 
 Return ONLY a JSON object, no prose, no code fence:
 {
-  "imageUrls": string[],   // 1-6 DIRECT links to image files (.jpg/.jpeg/.png/.webp).
-                           // Must be the image file itself, NOT a product page.
-  "pageUrl": string|null,  // the product page the images came from
+  "pageUrls": string[],    // 1-5 product PAGES for this exact product, best first.
+                           // These matter most: list every retailer and the
+                           // manufacturer's own page that you actually visited.
+  "imageUrls": string[],   // 0-6 DIRECT links to image files (.jpg/.jpeg/.png/.webp),
+                           // ONLY where you saw the exact URL. Leave empty if not.
+  "pageUrl": string|null,  // the single best product page
   "title": string|null,    // the product's real, full retail name
   "brand": string|null,
   "model": string|null,    // manufacturer model / part number
@@ -63,9 +76,14 @@ Return ONLY a JSON object, no prose, no code fence:
 }
 
 Rules:
-- Only include an image if you are confident it shows THIS product, not an
-  accessory, a different model, or a similar-looking item.
-- Never invent a URL. If you cannot find real images, return "imageUrls": [].
+- Only include a page or image if you are confident it is THIS product, not an
+  accessory, a different size or flavour, or a similar-looking item.
+- NEVER reconstruct or guess an image URL. A retailer's image URL contains an
+  opaque id you cannot infer from the page. If you did not see the exact
+  characters of the image URL, leave it out and give the page instead — the
+  page is read afterwards and its images are taken from it directly.
+- Prefer currently-selling listings over archived or discontinued ones: the
+  goal is the packaging on shelves now.
 - Do not return thumbnails, sprites, logos, or placeholder images.`;
 
 export const openAiWebProvider: SearchProvider = {
@@ -134,6 +152,39 @@ export const openAiWebProvider: SearchProvider = {
       if (candidates.length >= context.limit) break;
     }
 
+    // Now read the pages themselves.
+    //
+    // This is where most of the real candidates come from. The model names the
+    // page reliably and reconstructs the image URL unreliably, so the pages it
+    // listed are opened and asked what pictures they claim — which is metadata
+    // the retailer publishes deliberately and which therefore exists.
+    const pages: string[] = [];
+    for (const raw of [
+      ...(Array.isArray(finding.pageUrls) ? finding.pageUrls : []),
+      finding.pageUrl,
+    ]) {
+      const url = asHttpUrl(raw);
+      if (url && !pages.includes(url)) pages.push(url);
+    }
+
+    if (candidates.length < context.limit && pages.length > 0) {
+      const fromPages = await imagesFromPages(pages.slice(0, MAX_PAGES_READ));
+      for (const image of fromPages) {
+        if (seen.has(image.url)) continue;
+        seen.add(image.url);
+        candidates.push({
+          provider: 'openai-web',
+          sourceUrl: image.url,
+          pageUrl: image.pageUrl,
+          title: title ?? context.enrichment.canonicalTitle,
+          // Ranked above a URL the model typed out, because the page published
+          // this one about itself rather than being remembered.
+          providerConfidence: Math.min(0.9, 0.55 + confidence * 0.35),
+        });
+        if (candidates.length >= context.limit) break;
+      }
+    }
+
     const facts: ProductFacts | undefined =
       title || finding.brand || finding.model
         ? {
@@ -151,6 +202,66 @@ export const openAiWebProvider: SearchProvider = {
     return { candidates, facts: confidence >= 0.6 ? facts : undefined };
   },
 };
+
+// ---------------------------------------------------------------------------
+// Reading the pages
+// ---------------------------------------------------------------------------
+
+/**
+ * How many product pages are worth opening.
+ *
+ * Each is one small GET against a different host, and they run together, so the
+ * product waits for the slowest rather than the sum. Three covers the
+ * manufacturer plus a couple of retailers, which is where the disagreement that
+ * makes a choice meaningful comes from.
+ */
+const MAX_PAGES_READ = 3;
+
+/** A product page is HTML; anything of this size is not the part we want. */
+const MAX_PAGE_BYTES = 1_500_000;
+
+/**
+ * Open each page and take the images it states about itself.
+ *
+ * Failures are silent by design. A retailer that blocks a server-side fetch, a
+ * page that has moved, a timeout — none of these is a problem with the product,
+ * and every one of them still leaves the other pages and the barcode tier.
+ */
+async function imagesFromPages(
+  pages: string[],
+): Promise<Array<{ url: string; pageUrl: string }>> {
+  const results = await Promise.all(
+    pages.map(async (pageUrl) => {
+      try {
+        const { buffer, contentType } = await fetchBinary(pageUrl, {
+          maxBytes: MAX_PAGE_BYTES,
+          headers: { accept: 'text/html,application/xhtml+xml' },
+        });
+        if (contentType && !contentType.startsWith('text/html')) return [];
+
+        return extractPageImages(buffer.toString('utf8'), pageUrl).map((image) => ({
+          url: image.url,
+          pageUrl,
+        }));
+      } catch {
+        return [];
+      }
+    }),
+  );
+
+  // Interleaved rather than concatenated: taking every image from the first
+  // page before looking at the second would spend the whole candidate budget on
+  // one retailer, and disagreement between retailers is the point.
+  const merged: Array<{ url: string; pageUrl: string }> = [];
+  const depth = Math.max(...results.map((list) => list.length), 0);
+  for (let i = 0; i < depth; i += 1) {
+    for (const list of results) {
+      const entry = list[i];
+      if (entry) merged.push(entry);
+    }
+  }
+  return merged;
+}
 
 // ---------------------------------------------------------------------------
 // Calling the API

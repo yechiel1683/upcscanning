@@ -107,6 +107,32 @@ is always a guess and never a replacement: the original is still tried, so a
 host that changed its scheme costs one wasted request rather than a product. The
 export names whichever URL actually served the bytes.
 
+**Ask the model for pages, not image URLs.** The web tier used to ask a
+browsing model for direct links to image files, which is the single thing a
+language model cannot do. A retailer's image URL is a long opaque path with an
+id in it, so a model that has genuinely read the page reconstructs something
+that looks exactly right and does not exist. Those arrive as HTML error pages —
+`Not an image (content-type: text/html)` — or as nothing at all, and a product
+whose only other candidate was one barcode-database thumbnail failed outright.
+
+Which page the product is on, it knows. So the model is asked for product pages
+first and image URLs only where it saw the exact characters, and the pages are
+then opened and asked what images they publish about themselves: Open Graph
+tags, `twitter:image`, JSON-LD `Product.image`. That is metadata a retailer
+publishes deliberately — it is how a link renders a picture in a chat app — so
+those URLs exist by construction rather than by recall. Site furniture (logos,
+icons, tracking pixels) is filtered out, and the first image of every page is
+taken before the second image of any of them, so one gallery cannot spend the
+whole candidate budget before the second retailer is looked at.
+
+The same reading rescues a candidate that turns out to be a page: if a download
+returns HTML, its metadata is checked for the real image before the candidate is
+thrown away. The bytes are already paid for.
+
+It is also the best available answer to *the newest picture*. A barcode
+database's image is whatever was attached when the record was created, once. A
+live retail listing shows what is in the warehouse this week.
+
 **An empty row is retried before it is called a failure.** The search stops at
 the first good image by design, which means a row that came back empty usually
 stopped too early rather than proving no photograph exists. Every empty row is

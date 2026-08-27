@@ -30,6 +30,7 @@ import {
 } from '@/server/providers/search';
 import { Memo } from '@/server/lib/memo';
 import { scoreRecency } from '@/server/images/recency';
+import { extractPageImages, looksLikeHtml } from '@/server/images/page-images';
 import { canonicalImageKey, largerVariants } from '@/server/images/variants';
 import { verificationAvailable, verifyProductImage } from '@/server/providers/llm/verify';
 
@@ -1065,16 +1066,50 @@ async function downloadAndPrepare(
 ): Promise<{ buffer: Buffer; lastModified: string | null; usedUrl: string }> {
   const attempts = [...largerVariants(url), url];
   let lastError: unknown;
+  let servedPage: ServedPage | null = null;
 
   for (const attempt of attempts) {
     try {
       return await downloadOne(attempt);
     } catch (error) {
+      if (error instanceof ServedPage) servedPage = error;
       lastError = error;
     }
   }
 
+  // The host answered with a web page rather than a picture — a URL that has
+  // moved, a hotlink guard, or an image URL that was never real. The page it
+  // sent is often the product's own listing, and a listing states its images in
+  // its metadata, so this is one substitution away from the picture rather than
+  // a dead end. We have already paid for the bytes.
+  if (servedPage) {
+    const [image] = extractPageImages(servedPage.body, servedPage.url, 1);
+    if (image && image.url !== servedPage.url) {
+      try {
+        return await downloadOne(image.url);
+      } catch {
+        // Report what the candidate URL actually did, not what the salvage
+        // attempt did — the first is the fact worth putting in front of anyone.
+      }
+    }
+  }
+
   throw lastError;
+}
+
+/**
+ * Thrown when a candidate URL served HTML: carries the page so the caller can
+ * look for the real image in it instead of discarding a paid-for fetch.
+ */
+class ServedPage extends Error {
+  constructor(
+    readonly url: string,
+    readonly body: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ServedPage';
+  }
 }
 
 async function downloadOne(
@@ -1088,9 +1123,14 @@ async function downloadOne(
     // Some CDNs mislabel content types, so sniff the magic bytes before
     // rejecting outright.
     if (!looksLikeImage(buffer)) {
-      throw new Error(`Not an image (content-type: ${contentType || 'unknown'})`);
+      const message = `Not an image (content-type: ${contentType || 'unknown'})`;
+      if (looksLikeHtml(buffer)) throw new ServedPage(url, buffer.toString('utf8'), message);
+      throw new Error(message);
     }
   } else if (!contentType && !looksLikeImage(buffer)) {
+    if (looksLikeHtml(buffer)) {
+      throw new ServedPage(url, buffer.toString('utf8'), 'Response was a web page, not an image');
+    }
     throw new Error('Response did not contain image data');
   }
 

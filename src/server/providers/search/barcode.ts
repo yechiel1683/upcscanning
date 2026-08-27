@@ -175,8 +175,56 @@ interface OpenFactsResponse {
     image_url?: string;
     image_front_url?: string;
     selected_images?: { front?: { display?: Record<string, string> } };
+    /**
+     * Every photograph ever uploaded for this barcode.
+     *
+     * Numeric keys are raw uploads; named keys ("front_en", "nutrition_fr") are
+     * the crops contributors selected from them. Only the selected front was
+     * ever read, which for a popular product means one contributor's phone
+     * snapshot on a kitchen counter is the entire result — while four clean
+     * shots of the same bottle sit in here unread.
+     */
+    images?: Record<string, unknown>;
   };
 }
+
+/**
+ * The other photographs Open Food Facts holds for this product.
+ *
+ * The directory is taken from a URL the API already returned rather than
+ * assembled from the barcode: the path contains a split form of the code that
+ * is not worth reproducing, and getting it wrong would mean inventing URLs —
+ * the exact failure this pipeline exists to avoid. Raw uploads are addressed by
+ * their number at full size.
+ */
+function otherOpenFactsImages(
+  product: NonNullable<OpenFactsResponse['product']>,
+  known: string[],
+  limit: number,
+): string[] {
+  const reference = known[0];
+  if (!reference || !product.images) return [];
+
+  const base = reference.slice(0, reference.lastIndexOf('/'));
+  if (!base.startsWith('http')) return [];
+
+  // Numeric keys only. A named key is a crop of one of these, and the selected
+  // crops are already covered by selected_images.
+  const rawUploads = Object.keys(product.images)
+    .filter((key) => /^\d+$/.test(key))
+    .sort((a, b) => Number(b) - Number(a)); // Newest upload first.
+
+  return rawUploads.slice(0, limit).map((key) => `${base}/${key}.jpg`);
+}
+
+/**
+ * How many extra uploads to offer beyond the selected front.
+ *
+ * Each is a candidate that may be downloaded, so this is a real cost. Four is
+ * enough that a bad selected front can be outvoted without turning one product
+ * into a crawl of somebody's photo album.
+ */
+const MAX_EXTRA_UPLOADS = 4;
 
 /**
  * Open Food Facts and its sibling databases share one API shape. Together they
@@ -211,9 +259,17 @@ function openFactsProvider(name: string, host: string, confidence: number): Sear
       const product = data.product;
 
       const display = product.selected_images?.front?.display ?? {};
-      const urls = [...Object.values(display), product.image_front_url, product.image_url].filter(
-        (url): url is string => Boolean(url),
-      );
+      const selected = [
+        ...Object.values(display),
+        product.image_front_url,
+        product.image_url,
+      ].filter((url): url is string => Boolean(url));
+
+      // The selected front comes first because a contributor chose it, but it
+      // is one person's photograph and is often a phone snapshot on a kitchen
+      // counter. The other uploads for the same barcode are frequently better,
+      // and scoring can only pick the best picture out of the ones it is shown.
+      const urls = [...selected, ...otherOpenFactsImages(product, selected, MAX_EXTRA_UPLOADS)];
 
       const seen = new Set<string>();
       const candidates: SearchCandidate[] = [];

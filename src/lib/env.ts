@@ -66,6 +66,8 @@ const schema = z.object({
   OPENAI_IMAGE_MODEL: z.string().default('gpt-image-1'),
   OPENAI_TEXT_MODEL: z.string().default('gpt-4o-mini'),
   OPENAI_SEARCH_MODEL: z.string().default('gpt-4o-mini'),
+  // The answer plus, on a reasoning model, the thinking that produced it.
+  OPENAI_SEARCH_MAX_TOKENS: z.coerce.number().int().min(256).max(32_000).default(4000),
   OPENAI_WEB_SEARCH: z.enum(['on', 'off']).default('on'),
   REPLICATE_API_TOKEN: str,
   REPLICATE_MODEL: z.string().default('black-forest-labs/flux-1.1-pro'),

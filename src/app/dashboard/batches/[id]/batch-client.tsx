@@ -565,9 +565,18 @@ function ProductCard({
         ) : null}
 
         {product.errorMessage ? (
-          <p className="line-clamp-2 text-[11px] leading-snug text-danger" title={product.errorMessage}>
-            {product.errorMessage}
-          </p>
+          // The reason a row failed is the whole diagnosis, and clamping it to
+          // two lines hid the half that says what to do about it.
+          <details className="group">
+            <summary className="cursor-pointer list-none text-[11px] leading-snug text-danger">
+              <span className="line-clamp-2 group-open:line-clamp-none">
+                {product.errorMessage}
+              </span>
+              <span className="mt-0.5 block text-[10px] text-muted group-open:hidden">
+                Show the full reason
+              </span>
+            </summary>
+          </details>
         ) : null}
 
         {product.status === 'NEEDS_REVIEW' ? (

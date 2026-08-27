@@ -133,6 +133,34 @@ It is also the best available answer to *the newest picture*. A barcode
 database's image is whatever was attached when the record was created, once. A
 live retail listing shows what is in the warehouse this week.
 
+**A tier that is not working has to say so.** The web image search could fail
+in at least four ways — a rejected tool name, a model with no browsing tool, a
+reply that ran out of tokens before writing its JSON, an account without access
+— and every one of them ended at the same sentence: *the web image search found
+nothing either*. That is indistinguishable from a product nobody has ever
+photographed, which is a completely different problem with a completely
+different fix. Meanwhile every row quietly ran on the barcode databases alone
+and came back with one or two candidates.
+
+Each of those now reports itself, naming the setting to change. An honest miss
+is still an honest miss: whether the model actually searched is read from the
+tool-call records rather than guessed from its prose, so a tier that looked and
+found nothing is not confused with one that never looked. And `/setup` has a
+live search check that looks for a product which certainly has photographs and
+says what came back — if that finds nothing, the tier is broken, not the
+catalog.
+
+**Every photo a barcode database holds, not just the chosen one.** Open Food
+Facts stores every picture anyone has uploaded for a barcode; only the one a
+contributor marked "front" was read. For a popular product that meant one
+person's phone snapshot on a kitchen counter was the entire result, while
+several clean shots of the same bottle sat unread in the same response. Scoring
+can only pick the best picture out of the ones it is shown. The other uploads
+are now offered too, newest first, with the selected front still ranked first
+because somebody chose it — and the directory is taken from a URL the API
+returned rather than assembled from the barcode, because inventing URLs is the
+failure this pipeline exists to avoid.
+
 **An empty row is retried before it is called a failure.** The search stops at
 the first good image by design, which means a row that came back empty usually
 stopped too early rather than proving no photograph exists. Every empty row is

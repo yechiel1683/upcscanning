@@ -213,12 +213,14 @@ describe('openAiWebProvider results', () => {
     expect((await openAiWebProvider.search(context)).candidates).toHaveLength(0);
   });
 
-  it('returns nothing when the reply is not JSON at all', async () => {
+  it('reports, rather than silently ignoring, a reply that is not JSON', async () => {
+    // This used to expect no candidates and no error. That contract is what let
+    // a completely dead web tier look like a catalog of unphotographed
+    // products: every failure mode ended at "found nothing either". A provider
+    // that throws is caught by searchWeb and reported, which is the point.
     vi.stubGlobal('fetch', vi.fn(async () => mockReply('I could not find that product.', true)));
 
-    const result = await openAiWebProvider.search(context);
-    expect(result.candidates).toHaveLength(0);
-    expect(result.facts).toBeUndefined();
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(/did not browse/i);
   });
 
   it('sends the barcode in the query so the model can identify it', async () => {
@@ -392,5 +394,111 @@ describe('reading the product pages the model names', () => {
     const result = await openAiWebProvider.search(context);
     expect(result.candidates).toHaveLength(6);
     expect(calls.filter((url) => !url.includes('api.openai.com'))).toEqual([]);
+  });
+});
+
+describe('a web tier that is not working says so', () => {
+  /**
+   * Every one of these used to return "no candidates", which the pipeline
+   * reported as "the web image search found nothing either" — indistinguishable
+   * from a product nobody has ever photographed. That is the difference between
+   * a setting to change and a row to give up on, and it is why batch after
+   * batch came back with one or two candidates per product and no explanation.
+   */
+
+  function mockRaw(body: unknown) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/json' }),
+        json: async () => body,
+        text: async () => '',
+      })) as unknown as typeof fetch,
+    );
+  }
+
+  it('reports a reply that ran out of tokens before writing its answer', async () => {
+    // On a reasoning model the thinking is billed against the same budget, so a
+    // browsing call can spend the whole allowance before writing a character.
+    mockRaw({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [],
+    });
+
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(/incomplete/i);
+  });
+
+  it('names the token setting so the message says what to change', async () => {
+    mockRaw({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } });
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(
+      /OPENAI_SEARCH_MAX_TOKENS/,
+    );
+  });
+
+  it('reports a model that returned nothing at all', async () => {
+    // What a model with no hosted browsing tool does: answers, emptily.
+    mockRaw({ status: 'completed', output: [] });
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(/no text/i);
+  });
+
+  it('reports a model that answered without ever searching', async () => {
+    // No web_search_call in the output means the tool never ran. The model
+    // answered from memory, which for "find the current photograph of this
+    // barcode" is not an answer.
+    mockRaw({
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'I am unable to browse the web.' }],
+        },
+      ],
+    });
+
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(/did not browse/i);
+  });
+
+  it('quotes what the model actually said, so the cause is not a guess', async () => {
+    mockRaw({
+      status: 'completed',
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'I cannot access the internet.' }] },
+      ],
+    });
+
+    await expect(openAiWebProvider.search(context)).rejects.toThrow(/cannot access the internet/i);
+  });
+
+  it('does not cry wolf when a real search honestly found nothing', async () => {
+    // A tier that searched and came up empty is a fact about the product, not a
+    // fault. Reporting it as a fault would bury the cases that are.
+    mockRaw({
+      status: 'completed',
+      output: [
+        { type: 'web_search_call', content: [] },
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'I could not find that product anywhere.' }],
+        },
+      ],
+    });
+
+    const result = await openAiWebProvider.search(context);
+    expect(result.candidates).toEqual([]);
+  });
+
+  it('still treats an honest empty result as an empty result', async () => {
+    // A real search that genuinely found nothing must not be reported as a
+    // broken tier, or the diagnosis becomes noise.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => mockReply({ imageUrls: [], pageUrls: [], confidence: 0.2 })),
+    );
+
+    const result = await openAiWebProvider.search(context);
+    expect(result.candidates).toEqual([]);
   });
 });

@@ -40,6 +40,9 @@ interface ResponsesApiResponse {
   output?: ResponsesOutputItem[];
   output_text?: string;
   error?: { message?: string };
+  /** "completed", "incomplete", "failed" — an incomplete reply has no JSON in it. */
+  status?: string;
+  incomplete_details?: { reason?: string };
 }
 
 interface ModelFinding {
@@ -124,8 +127,40 @@ export const openAiWebProvider: SearchProvider = {
 
     if (data.error?.message) throw new HttpError(`OpenAI web search: ${data.error.message}`);
 
-    const finding = parseFinding(extractText(data));
-    if (!finding) return { candidates: [] };
+    // A reply that ran out of room before it wrote its JSON is a failure, not
+    // an absence. Returning "no candidates" for it made a misconfigured web
+    // tier indistinguishable from a product nobody has photographed — which is
+    // the difference between a setting to change and a row to give up on.
+    if (data.status && data.status !== 'completed') {
+      throw new HttpError(
+        `OpenAI web search returned ${data.status}` +
+          (data.incomplete_details?.reason ? ` (${data.incomplete_details.reason})` : '') +
+          '. Raise OPENAI_SEARCH_MAX_TOKENS or use a different OPENAI_SEARCH_MODEL.',
+      );
+    }
+
+    const text = extractText(data);
+    if (!text.trim()) {
+      throw new HttpError(
+        `OpenAI web search returned no text (model ${env().OPENAI_SEARCH_MODEL}). ` +
+          'The model may not support the hosted web-search tool.',
+      );
+    }
+
+    const finding = parseFinding(text);
+    if (!finding) {
+      // Prose instead of JSON is ambiguous on its own: it can be a model
+      // explaining that it found nothing, which is an honest answer, or a model
+      // explaining that it cannot browse, which is a broken tier. The tool call
+      // records say which — a reply that never searched did not look.
+      if (!didBrowse(data)) {
+        throw new HttpError(
+          `OpenAI web search did not browse (model ${env().OPENAI_SEARCH_MODEL}). ` +
+            `It replied: ${text.slice(0, 160)}`,
+        );
+      }
+      return { candidates: [] };
+    }
 
     const confidence = clampConfidence(finding.confidence);
     const pageUrl = asHttpUrl(finding.pageUrl);
@@ -315,9 +350,12 @@ async function browse(query: string): Promise<ResponsesApiResponse> {
             instructions: INSTRUCTIONS,
             input: query,
             tools: [{ type: tool }],
-            // Browsing plus a JSON answer takes a while; the outer HTTP timeout
-            // is far too short for it.
-            max_output_tokens: 1200,
+            // Generous, because this budget is not just the answer. On a
+            // reasoning model the thinking is billed against it too, and a
+            // browsing call that reads several pages can spend the whole
+            // allowance before writing a character — which arrives here as an
+            // empty reply that used to be read as "found nothing".
+            max_output_tokens: config.OPENAI_SEARCH_MAX_TOKENS,
           }),
           timeoutMs: 90_000,
         }),
@@ -354,6 +392,20 @@ function extractText(data: ResponsesApiResponse): string {
     }
   }
   return parts.join('\n');
+}
+
+/**
+ * Did the model actually run a search, or only talk about one?
+ *
+ * The Responses API records each hosted tool call as its own output item. No
+ * such item means the browsing tool never ran — the model answered from memory,
+ * which for "find the current photograph of this barcode" is not an answer.
+ * This is the difference between a tier that searched and found nothing and a
+ * tier that is not searching at all, and no amount of reading the prose
+ * distinguishes them reliably.
+ */
+function didBrowse(data: ResponsesApiResponse): boolean {
+  return (data.output ?? []).some((item) => /search/i.test(item.type ?? ''));
 }
 
 function parseFinding(text: string): ModelFinding | null {

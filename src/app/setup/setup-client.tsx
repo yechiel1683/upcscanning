@@ -42,6 +42,15 @@ interface KeyTest {
   status?: number;
 }
 
+interface SearchTest {
+  state: string;
+  message: string;
+  candidates: number;
+  hosts: string[];
+  model: string;
+  detail?: string;
+}
+
 const STATUS_TONE: Record<CheckStatus, string> = {
   ok: 'border-positive/40 bg-positive-soft',
   problem: 'border-warning/40 bg-warning-soft',
@@ -61,6 +70,8 @@ export function SetupClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [test, setTest] = useState<KeyTest | null>(null);
   const [testing, setTesting] = useState(false);
+  const [search, setSearch] = useState<SearchTest | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -87,6 +98,42 @@ export function SetupClient() {
       setTest({ state: 'error', message: 'The check did not reach the server.' });
     } finally {
       setTesting(false);
+    }
+  }
+
+  /**
+   * A valid, funded key can still be completely unable to browse, and when that
+   * happens every product quietly falls back to the barcode databases alone —
+   * which looks like a catalog of unphotographed products rather than a setting
+   * to change. This searches for a product that certainly has pictures and
+   * reports what actually came back.
+   */
+  async function runSearchTest() {
+    setSearching(true);
+    try {
+      const response = await fetch('/api/setup/test-search', { method: 'POST' });
+      const body = (await response.json()) as SearchTest & { error?: string };
+      setSearch(
+        response.ok
+          ? body
+          : {
+              state: 'failed',
+              message: body.error ?? 'The check failed.',
+              candidates: 0,
+              hosts: [],
+              model: '',
+            },
+      );
+    } catch {
+      setSearch({
+        state: 'failed',
+        message: 'The check did not reach the server.',
+        candidates: 0,
+        hosts: [],
+        model: '',
+      });
+    } finally {
+      setSearching(false);
     }
   }
 
@@ -168,6 +215,36 @@ export function SetupClient() {
             )}
           >
             {test.message}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Live image search check"
+          description="Searches for a product that definitely has photographs, and reports what came back. If this finds nothing, the search tier is broken — not your barcodes."
+          action={
+            <Button size="sm" onClick={() => void runSearchTest()} disabled={searching}>
+              {searching ? 'Searching…' : 'Run search'}
+            </Button>
+          }
+        />
+        {search ? (
+          <div
+            className={cn(
+              'mx-5 mb-5 mt-4 rounded-xl border p-4 text-sm leading-relaxed',
+              search.state === 'ok'
+                ? 'border-positive/40 bg-positive-soft text-fg'
+                : 'border-warning/40 bg-warning-soft text-fg',
+            )}
+          >
+            <p>{search.message}</p>
+            {search.detail ? (
+              <p className="mt-2 break-words font-mono text-xs text-muted">{search.detail}</p>
+            ) : null}
+            {search.model ? (
+              <p className="mt-2 text-xs text-subtle">Search model: {search.model}</p>
+            ) : null}
           </div>
         ) : null}
       </Card>

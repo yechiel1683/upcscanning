@@ -1,52 +1,39 @@
-import { prisma } from '@/server/db';
+import { checkReadiness } from '@/server/health/probes';
 
 /**
  * Readiness: can this instance actually do its job?
  *
- * The database probe is bounded. An unreachable host does not refuse a
- * connection, it swallows it, so an unguarded query can hang far longer than
- * any caller is willing to wait — which is precisely how a health endpoint
- * turns into a hung request instead of an answer.
+ * Distinct from `/api/health`, which answers "is the process alive" and is what
+ * the platform polls. This one asks the harder question, and answers it per
+ * dependency — because "not ready" on its own sends an operator looking through
+ * logs for something the check already knew.
+ *
+ * `?deep=1` adds a real write-read-delete against storage. Left out of the
+ * routine answer so a platform polling every few seconds is not writing an
+ * object each time; worth running by hand after changing storage settings,
+ * since credentials that authenticate but cannot write look identical to
+ * working ones until the first customer clicks an image.
  */
 export const dynamic = 'force-dynamic';
 
-const PROBE_TIMEOUT_MS = 3000;
-
-async function probeDatabase(): Promise<{ ok: boolean; detail: string }> {
-  let timer: NodeJS.Timeout | undefined;
-
-  const timeout = new Promise<{ ok: false; detail: string }>((resolve) => {
-    timer = setTimeout(
-      () => resolve({ ok: false, detail: `no response within ${PROBE_TIMEOUT_MS}ms` }),
-      PROBE_TIMEOUT_MS,
-    );
-  });
-
-  const query = prisma
-    .$queryRaw`SELECT 1`
-    .then(() => ({ ok: true, detail: 'connected' }))
-    .catch((error: unknown) => ({
-      ok: false,
-      detail: error instanceof Error ? error.message.split('\n')[0] ?? 'query failed' : 'query failed',
-    }));
-
-  try {
-    return await Promise.race([query, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-export async function GET() {
-  const database = await probeDatabase();
+export async function GET(request: Request) {
+  const deep = new URL(request.url).searchParams.get('deep') === '1';
+  const { ready, probes } = await checkReadiness(deep);
 
   return Response.json(
     {
-      status: database.ok ? 'ready' : 'not-ready',
-      database: database.ok,
-      databaseDetail: database.detail,
+      status: ready ? 'ready' : 'not-ready',
       uptimeSeconds: Math.round(process.uptime()),
+      checks: Object.fromEntries(
+        probes.map((probe) => [
+          probe.name,
+          { ok: probe.ok, configured: probe.configured, detail: probe.detail },
+        ]),
+      ),
+      // Named plainly so an operator reading a 503 in a terminal knows where to
+      // go without opening the dashboard.
+      blocking: probes.filter((probe) => !probe.ok).map((probe) => probe.name),
     },
-    { status: database.ok ? 200 : 503 },
+    { status: ready ? 200 : 503 },
   );
 }

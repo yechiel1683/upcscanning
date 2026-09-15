@@ -23,3 +23,6 @@ next-env.d.ts
 .DS_Store
 *.log
 npm-debug.log*
+
+# Database dumps taken by scripts/backup.ts — never in the repo.
+.backups/

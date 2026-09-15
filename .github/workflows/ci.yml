@@ -116,6 +116,14 @@ jobs:
         # PostgreSQL, and it has been checked to fail when the index is dropped.
         run: npx tsx scripts/verify-billing.ts
 
+      - name: Verification codes cannot be brute-forced or replayed
+        # Every control here is a database write — an attempt counter that must
+        # increment across rows, a single-use update that must lose a race, an
+        # expiry compared by the database clock. A mock has none of those, so a
+        # unit test would pass whether the protections existed or not. Each has
+        # been checked to fail when removed.
+        run: npx tsx scripts/verify-auth.ts
+
       - name: Schema matches the migrations
         # Compares the database the migrations just built against the schema
         # the code is generated from. Catches a schema.prisma edited without a

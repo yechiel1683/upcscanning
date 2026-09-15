@@ -99,6 +99,10 @@ const schema = z.object({
 
   // How many proxies sit in front of this app. Decides which entry of
   // x-forwarded-for is trustworthy; see server/api/client-ip.ts. Railway is 1.
+  // Email. Absent means messages are printed to the log instead of sent,
+  // which is what makes the signup flow developable without a mailbox.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default('UPC Scanning <noreply@upcscanning.com>'),
   // Payments. Absent means the instance simply does not sell anything, which
   // is a valid state for a staging deploy rather than a misconfiguration.
   STRIPE_SECRET_KEY: z.string().optional(),

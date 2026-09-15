@@ -25,17 +25,28 @@ enum Plan {
   SCALE
 }
 
+enum Role {
+  USER
+  // Staff. Sees the admin area; never granted through the app itself.
+  ADMIN
+}
+
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  passwordHash String
-  name         String?
-  plan         Plan     @default(FREE)
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String?
+  role          Role      @default(USER)
+  /**
+   * Null until the address has been proven.
+   */
+  emailVerified DateTime?
+  plan          Plan      @default(FREE)
   // Running balance, kept in sync with CreditLedger entries. Denormalised so
   // the hot path (enqueueing 1,000 products) is a single read.
-  credits      Int      @default(50)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  credits       Int       @default(50)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   batches   Batch[]
   apiKeys   ApiKey[]
@@ -44,6 +55,48 @@ model User {
   purchases Purchase[]
 
   @@map("users")
+}
+
+enum VerificationPurpose {
+  // Proving an address at signup, before the account can be used.
+  SIGNUP
+  // Proving it again to set a new password.
+  PASSWORD_RESET
+}
+
+/**
+ * A one-time code sent to an email address.
+ * Only a hash is stored, for the same reason session tokens are hashed: a
+ * database dump must not hand somebody a working code for every pending
+ * signup.
+ * `attempts` is the control that makes a six-digit code safe. Six digits is a
+ * million possibilities, which is nothing to a script — so the code is not what
+ * stops a guess, the attempt ceiling is. The row dies at five wrong answers.
+ */
+model VerificationCode {
+  id        String              @id @default(cuid())
+  email     String
+  purpose   VerificationPurpose
+  codeHash  String
+  /**
+   * Wrong guesses so far. At the ceiling the code is dead, not merely wrong.
+   */
+  attempts  Int                 @default(0)
+  expiresAt DateTime
+  /**
+   * Set the moment it is accepted, so a code works exactly once.
+   */
+  usedAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  // Pending signups carry the details to create the account with, so an
+  // unverified address never becomes a User row.
+  pendingName         String?
+  pendingPasswordHash String?
+
+  @@index([email, purpose])
+  @@index([expiresAt])
+  @@map("verification_codes")
 }
 
 model Session {

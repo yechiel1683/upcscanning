@@ -1,3 +1,4 @@
+import { limit } from '@/server/api/guard';
 import { LedgerReason } from '@prisma/client';
 import { z } from 'zod';
 
@@ -15,6 +16,11 @@ const schema = z.object({
 
 export async function POST(request: Request) {
   try {
+    // New accounts arrive with free credits, so unlimited signups are
+    // unlimited credits.
+    const refused = limit(request, 'register');
+    if (refused) return refused;
+
     const body = schema.parse(await request.json());
     const email = body.email.toLowerCase().trim();
 

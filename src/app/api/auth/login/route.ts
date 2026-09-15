@@ -1,3 +1,4 @@
+import { limit } from '@/server/api/guard';
 import { z } from 'zod';
 
 import { prisma } from '@/server/db';
@@ -11,6 +12,11 @@ const schema = z.object({
 
 export async function POST(request: Request) {
   try {
+    // Tight enough to make credential stuffing useless, loose enough to
+    // survive somebody genuinely mistyping their password.
+    const refused = limit(request, 'login');
+    if (refused) return refused;
+
     const body = schema.parse(await request.json());
     const email = body.email.toLowerCase().trim();
 

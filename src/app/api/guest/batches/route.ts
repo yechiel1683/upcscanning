@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
 import { DEFAULT_RENDER_OPTIONS, renderOptionsSchema, type RenderOptions } from '@/lib/types';
+import { limit } from '@/server/api/guard';
 import { fail, handleError, ok } from '@/server/api/respond';
 import { readUploadForm, UploadError } from '@/server/api/upload';
 import { currentGuest, startGuest } from '@/server/guest/session';
 import { runGuestBatch } from '@/server/guest/run';
+import { releaseGuestImages, reserveGuestImages } from '@/server/guest/budget';
 import { createGuestBatch, GUEST_MAX_PRODUCTS_PER_BATCH } from '@/server/guest/store';
 import { parseBarcodeList } from '@/server/ingest/barcode-list';
 import { mappingIsUsable } from '@/server/ingest/column-mapper';
@@ -28,6 +30,11 @@ const barcodeSchema = z.object({
  */
 export async function POST(request: Request) {
   try {
+    // Before anything is parsed or a session is handed out. This endpoint is
+    // public, unauthenticated, and spends real money per row.
+    const refused = limit(request, 'guestBatch');
+    if (refused) return refused;
+
     // A guest who posts without having started a session gets one, so the
     // "try it" path is a single click rather than two.
     const session = (await currentGuest()) ?? (await startGuest());
@@ -83,6 +90,17 @@ export async function POST(request: Request) {
       );
     }
 
+    // Claim today's share of the trial budget before starting, not after
+    // finishing: a counter that only moves on completion is behind by however
+    // many batches are in flight, which is the window a flood walks through.
+    const budget = reserveGuestImages(parsed.products.length);
+    if (!budget.allowed) {
+      return fail(budget.message ?? 'The free trial is full for today.', 429, {
+        remaining: budget.remaining,
+        dailyLimit: budget.limit,
+      });
+    }
+
     const batch = createGuestBatch(session, {
       name: batchName,
       originalFile: sourceName,
@@ -94,6 +112,9 @@ export async function POST(request: Request) {
     // does for an account batch.
     void runGuestBatch(session, batch).catch((error) => {
       console.error('[guest] batch failed', error);
+      // Nothing was processed, so nothing was spent. Holding the reservation
+      // would close the trial early for everyone else.
+      releaseGuestImages(parsed.products.length);
     });
 
     return ok(

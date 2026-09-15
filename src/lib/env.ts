@@ -97,6 +97,12 @@ const schema = z.object({
    */
   JPEG_COMPRESSION: z.enum(['fast', 'compact']).default('fast'),
 
+  // How many proxies sit in front of this app. Decides which entry of
+  // x-forwarded-for is trustworthy; see server/api/client-ip.ts. Railway is 1.
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(5).default(1),
+  // Images the free trial may process per day, across every visitor. 0 closes
+  // the trial. This is the ceiling that does not care how many processes run.
+  GUEST_DAILY_IMAGE_LIMIT: z.coerce.number().int().min(0).default(2000),
   MAX_UPLOAD_BYTES: int(50 * 1024 * 1024),
   MAX_PRODUCTS_PER_BATCH: int(5000),
   MAX_IMAGE_DOWNLOAD_BYTES: int(15 * 1024 * 1024),

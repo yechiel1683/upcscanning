@@ -1,3 +1,4 @@
+import { limit } from '@/server/api/guard';
 import { env } from '@/lib/env';
 import { CANONICAL_FIELDS } from '@/lib/types';
 import { fail, handleError, ok, withUser } from '@/server/api/respond';
@@ -14,6 +15,10 @@ export const maxDuration = 60;
  * spending credits on 1,000 rows.
  */
 export const POST = withUser(async (_user, request) => {
+  // Parsing a spreadsheet is CPU rather than API spend, but it is not free.
+  const refused = limit(request, 'uploadPreview');
+  if (refused) return refused;
+
   try {
     const form = await readUploadForm(request);
 

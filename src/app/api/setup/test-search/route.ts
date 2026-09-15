@@ -1,3 +1,4 @@
+import { limit } from '@/server/api/guard';
 import { handleError, ok } from '@/server/api/respond';
 import { testWebSearch } from '@/server/setup/web-search-test';
 
@@ -14,8 +15,12 @@ export const maxDuration = 120;
  * alone, which looks like a catalog of unphotographed products rather than a
  * setting to change.
  */
-export async function POST() {
+export async function POST(request: Request) {
   try {
+    // A real browsing call against the configured key, so it costs money.
+    const refused = limit(request, 'setupCheck');
+    if (refused) return refused;
+
     return ok(await testWebSearch());
   } catch (error) {
     return handleError(error);

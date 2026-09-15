@@ -51,6 +51,12 @@ export const LIMITS = {
   register: { limit: 5, windowMs: 60 * 60_000 },
 
   /**
+   * Opening a checkout costs a Stripe API call and creates a session. A
+   * customer picks a pack once or twice; a script would make sessions forever.
+   */
+  checkout: { limit: 10, windowMs: 60 * 60_000 },
+
+  /**
    * The setup checks each make a real API call against the configured key.
    * They are meant to be pressed by an operator a few times, not polled.
    */

@@ -24,7 +24,8 @@
     "release": "tsx scripts/release.ts",
     "start:server": "next start -H 0.0.0.0",
     "brand": "tsx scripts/generate-brand-assets.ts",
-    "backup": "tsx scripts/backup.ts"
+    "backup": "tsx scripts/backup.ts",
+    "verify:billing": "tsx scripts/verify-billing.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
@@ -43,6 +44,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sharp": "^0.33.5",
+    "stripe": "^22.6.2",
     "zod": "^3.24.1"
   },
   "devDependencies": {

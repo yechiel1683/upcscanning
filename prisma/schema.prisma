@@ -41,6 +41,7 @@ model User {
   apiKeys   ApiKey[]
   ledger    CreditLedger[]
   sessions  Session[]
+  purchases Purchase[]
 
   @@map("users")
 }
@@ -82,18 +83,84 @@ enum LedgerReason {
   IMAGE_SOURCED
   IMAGE_GENERATED
   REFUND_FAILED
+  // Credits bought outright. Every one of these has a Purchase behind it.
+  PACK_PURCHASE
+  // Money returned, so the credits go back out again.
+  PURCHASE_REFUNDED
+}
+
+enum PurchaseStatus {
+  // Checkout opened; the customer may never finish, and most who abandon
+  // never come back, so these are expected rather than exceptional.
+  PENDING
+  PAID
+  REFUNDED
+  // Stripe reported the payment failed. Kept rather than deleted, because
+  // "why did my card not work" is a support question that needs an answer.
+  FAILED
+}
+
+/**
+ * One purchase of a credit pack.
+ * Separate from CreditLedger on purpose: the ledger is the record of credit
+ * movement and this is the record of money. They are one-to-one on a happy
+ * path and emphatically not when a payment is refunded, disputed, or arrives
+ * twice because Stripe retried a webhook.
+ */
+model Purchase {
+  id     String         @id @default(cuid())
+  userId String
+  status PurchaseStatus @default(PENDING)
+
+  /**
+   * Which pack was bought, by the id in lib/packs.ts.
+   */
+  packId   String
+  /**
+   * Credits this pack grants, copied at purchase time so a later price
+   * change never rewrites what somebody already bought.
+   */
+  credits  Int
+  /**
+   * Minor units — cents — because floating point has no place near money.
+   */
+  amount   Int
+  currency String @default("usd")
+
+  /**
+   * Stripe's id for the Checkout Session.
+   * Unique, and that uniqueness is the whole idempotency mechanism: Stripe
+   * retries a webhook until it gets a 2xx, so the same completed event arrives
+   * repeatedly. Without a constraint here a customer is credited twice for one
+   * payment, and the second one is free.
+   */
+  stripeSessionId       String  @unique
+  stripePaymentIntentId String?
+
+  createdAt  DateTime  @default(now())
+  paidAt     DateTime?
+  refundedAt DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("purchases")
 }
 
 model CreditLedger {
-  id        String       @id @default(cuid())
-  userId    String
+  id         String       @id @default(cuid())
+  userId     String
   // Negative for consumption, positive for grants.
-  delta     Int
-  reason    LedgerReason
-  batchId   String?
-  productId String?
-  note      String?
-  createdAt DateTime     @default(now())
+  delta      Int
+  reason     LedgerReason
+  batchId    String?
+  productId  String?
+  /**
+   * Set when this entry came from a payment, so money and credits reconcile.
+   */
+  purchaseId String?
+  note       String?
+  createdAt  DateTime     @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -174,7 +241,7 @@ enum ImageSourceKind {
 }
 
 model Product {
-  id          String  @id @default(cuid())
+  id          String   @id @default(cuid())
   batchId     String
   // 1-based position in the source spreadsheet, used for stable ordering and
   // for pointing the user at the offending row when something fails.
@@ -208,7 +275,7 @@ model Product {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
-  batch      Batch              @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  batch      Batch            @relation(fields: [batchId], references: [id], onDelete: Cascade)
   images     ImageAsset[]
   candidates ImageCandidate[]
 
@@ -220,22 +287,22 @@ model Product {
 // A raw search hit, before download/validation. Retained so a human can audit
 // why a particular image was chosen and pick a different one.
 model ImageCandidate {
-  id         String   @id @default(cuid())
-  productId  String
-  provider   String
-  sourceUrl  String   @db.Text
-  pageUrl    String?  @db.Text
-  title      String?  @db.Text
-  width      Int?
-  height     Int?
+  id             String   @id @default(cuid())
+  productId      String
+  provider       String
+  sourceUrl      String   @db.Text
+  pageUrl        String?  @db.Text
+  title          String?  @db.Text
+  width          Int?
+  height         Int?
   // 0..1 confidence that this image depicts the requested product.
-  matchScore Float    @default(0)
+  matchScore     Float    @default(0)
   // 0..1 technical quality (resolution, aspect, background cleanliness).
-  qualityScore Float  @default(0)
-  rejected   Boolean  @default(false)
+  qualityScore   Float    @default(0)
+  rejected       Boolean  @default(false)
   rejectedReason String?
-  selected   Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  selected       Boolean  @default(false)
+  createdAt      DateTime @default(now())
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
@@ -275,7 +342,6 @@ model ImageAsset {
 
 /**
  * Barcode lookup results, shared across every batch and every user.
- *
  * A GTIN identifies the same product forever, and supplier lists overlap
  * heavily — the same barcode arrives again next month in someone else's
  * spreadsheet. Without this, every upload re-spends the free tier's daily

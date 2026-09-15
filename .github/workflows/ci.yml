@@ -98,10 +98,23 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Generate Prisma client
+        # migrate deploy does not generate it, and the billing check below
+        # imports it.
+        run: npx prisma generate
+
       - name: Apply every migration from empty
         # A migration that only works against the author's database is found
         # here rather than on the production boot that runs `migrate deploy`.
         run: npx prisma migrate deploy
+
+      - name: The money path holds against a real database
+        # The property that matters — a redelivered webhook must never credit
+        # twice — is enforced by a unique constraint, not by application code.
+        # A mocked Prisma client has no constraints, so a unit test would pass
+        # whether the protection existed or not. This runs against real
+        # PostgreSQL, and it has been checked to fail when the index is dropped.
+        run: npx tsx scripts/verify-billing.ts
 
       - name: Schema matches the migrations
         # Compares the database the migrations just built against the schema

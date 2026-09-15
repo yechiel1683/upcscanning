@@ -99,6 +99,10 @@ const schema = z.object({
 
   // How many proxies sit in front of this app. Decides which entry of
   // x-forwarded-for is trustworthy; see server/api/client-ip.ts. Railway is 1.
+  // Payments. Absent means the instance simply does not sell anything, which
+  // is a valid state for a staging deploy rather than a misconfiguration.
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
   TRUSTED_PROXY_HOPS: z.coerce.number().int().min(1).max(5).default(1),
   // Images the free trial may process per day, across every visitor. 0 closes
   // the trial. This is the ceiling that does not care how many processes run.

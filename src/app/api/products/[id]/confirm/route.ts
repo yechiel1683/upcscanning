@@ -1,4 +1,4 @@
-import { ProductStatus } from '@prisma/client';
+import { LedgerReason, ProductStatus } from '@prisma/client';
 
 import { fail, notFound, ok, withUser } from '@/server/api/respond';
 import { prisma } from '@/server/db';
@@ -69,6 +69,30 @@ export const POST = withUser(async (user, request, { params }: Params) => {
           outputName: null,
           errorMessage: 'You rejected the image that was found for this product.',
         },
+      });
+
+      // Give the credit back. The row succeeded, so it was charged — and the
+      // customer has just told us the picture was wrong. Everywhere else in
+      // this pipeline a row that produces nothing usable costs nothing, and a
+      // rejected image is the clearest case of that there is. Charging for it
+      // would make the review flow something people avoid using.
+      await tx.creditLedger.create({
+        data: {
+          userId: user.id,
+          delta: 1,
+          reason: LedgerReason.REFUND_FAILED,
+          productId: id,
+          note: 'Image rejected on review',
+        },
+      });
+      await tx.user.update({
+        where: { id: user.id },
+        data: { credits: { increment: 1 } },
+      });
+      // The batch counters move too: this is a failure now, not a success.
+      await tx.batch.update({
+        where: { id: product.batchId },
+        data: { successCount: { decrement: 1 }, failedCount: { increment: 1 } },
       });
     });
   }

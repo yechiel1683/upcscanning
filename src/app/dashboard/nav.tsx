@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/dashboard', label: 'Overview', exact: true },
   { href: '/dashboard/upload', label: 'New upload' },
   { href: '/dashboard/batches', label: 'Batches' },
+  { href: '/dashboard/billing', label: 'Credits' },
   { href: '/dashboard/settings', label: 'Settings' },
 ];
 

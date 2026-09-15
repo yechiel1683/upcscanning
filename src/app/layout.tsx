@@ -1,3 +1,4 @@
+import { headers } from 'next/headers';
 import type { Metadata, Viewport } from 'next';
 
 import { BRAND, COMPANY, DOMAIN } from '@/components/brand';
@@ -74,14 +75,20 @@ const organizationJsonLd = {
   slogan: TAGLINE,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Set per request by the middleware, and named in that request's
+  // Content-Security-Policy. Without it these two scripts are blocked, which is
+  // the point: an injected script cannot guess the value and so cannot run.
+  const nonce = (await headers()).get('x-nonce') ?? undefined;
+
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
       <head>
         {/* Blocking on purpose: it must run before first paint, or a visitor who
             chose the light theme sees a black flash on every navigation. */}
-        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        <script nonce={nonce} dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <script
+          nonce={nonce}
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd) }}
         />

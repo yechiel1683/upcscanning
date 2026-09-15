@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { DEFAULT_RENDER_OPTIONS, renderOptionsSchema, type RenderOptions } from '@/lib/types';
-import { limit } from '@/server/api/guard';
+import { limit, sameOrigin } from '@/server/api/guard';
 import { fail, handleError, ok } from '@/server/api/respond';
 import { readUploadForm, UploadError } from '@/server/api/upload';
 import { currentGuest, startGuest } from '@/server/guest/session';
@@ -32,6 +32,9 @@ export async function POST(request: Request) {
   try {
     // Before anything is parsed or a session is handed out. This endpoint is
     // public, unauthenticated, and spends real money per row.
+    const forged = sameOrigin(request);
+    if (forged) return forged;
+
     const refused = limit(request, 'guestBatch');
     if (refused) return refused;
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resetEnvCache } from '@/lib/env';
 import { clientIp, rateLimitKey } from '@/server/api/client-ip';
-import { LIMITS, limit } from '@/server/api/guard';
+import { LIMITS, limit, sameOrigin } from '@/server/api/guard';
 import {
   checkRate,
   peekRate,
@@ -255,5 +255,55 @@ describe('the daily trial budget', () => {
     process.env.GUEST_DAILY_IMAGE_LIMIT = '0';
     resetEnvCache();
     expect(reserveGuestImages(1).allowed).toBe(false);
+  });
+});
+
+describe('the cross-origin check', () => {
+  function post(headers: Record<string, string>, method = 'POST'): Request {
+    return new Request('https://upcscanning.com/api/batches', { method, headers });
+  }
+
+  it('allows a request from our own site', () => {
+    expect(sameOrigin(post({ origin: 'https://upcscanning.com' }))).toBeNull();
+  });
+
+  it('refuses one another site caused the browser to send', () => {
+    // The whole attack: a form on evil.example posts here, and the browser
+    // helpfully attaches the victim's session cookie.
+    expect(sameOrigin(post({ origin: 'https://evil.example' }))?.status).toBe(403);
+  });
+
+  it('is not fooled by a lookalike host', () => {
+    expect(sameOrigin(post({ origin: 'https://upcscanning.com.evil.example' }))?.status).toBe(403);
+    expect(sameOrigin(post({ origin: 'https://notupcscanning.com' }))?.status).toBe(403);
+  });
+
+  it('leaves reads alone, because they change nothing', () => {
+    expect(sameOrigin(post({ origin: 'https://evil.example' }, 'GET'))).toBeNull();
+    expect(sameOrigin(post({ origin: 'https://evil.example' }, 'HEAD'))).toBeNull();
+  });
+
+  it('does not break API clients holding a key', () => {
+    // A browser never attaches an Authorization header by itself, so a request
+    // carrying one was written deliberately. Applying the check here would
+    // break every legitimate API client — none of them sends an Origin — while
+    // protecting nothing.
+    expect(sameOrigin(post({ authorization: 'Bearer upc_live_abc123' }))).toBeNull();
+  });
+
+  it('refuses a cookie request with no origin at all', () => {
+    // Treating "absent" as "fine" would make the check opt-out for anyone able
+    // to suppress a header.
+    expect(sameOrigin(post({}))?.status).toBe(403);
+  });
+
+  it('falls back to the referer when there is no origin', () => {
+    expect(sameOrigin(post({ referer: 'https://upcscanning.com/dashboard' }))).toBeNull();
+    expect(sameOrigin(post({ referer: 'https://evil.example/x' }))?.status).toBe(403);
+  });
+
+  it('refuses a malformed origin rather than letting it through', () => {
+    expect(sameOrigin(post({ origin: 'not-a-url' }))?.status).toBe(403);
+    expect(sameOrigin(post({ origin: 'null' }))?.status).toBe(403);
   });
 });

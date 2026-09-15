@@ -1,4 +1,4 @@
-import { limit } from '@/server/api/guard';
+import { limit, sameOrigin } from '@/server/api/guard';
 import { fail, handleError, ok } from '@/server/api/respond';
 import { currentGuest, endGuest, startGuest } from '@/server/guest/session';
 import { GUEST_CREDITS, GUEST_MAX_PRODUCTS_PER_BATCH } from '@/server/guest/store';
@@ -20,6 +20,9 @@ export async function GET() {
 export async function POST(request: Request) {
   // Each session carries a fresh image allowance, so handing them out without
   // limit hands out the allowance without limit.
+  const forged = sameOrigin(request);
+  if (forged) return forged;
+
   const refused = limit(request, 'guestSession');
   if (refused) return refused;
 

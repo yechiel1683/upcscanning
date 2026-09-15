@@ -93,3 +93,69 @@ export function limit(request: Request, name: LimitName): NextResponse | null {
     },
   );
 }
+
+/**
+ * Reject a state-changing request that a different site caused the browser to
+ * send.
+ *
+ * Cookies are attached by the browser to *any* request to this origin,
+ * including one triggered by a form on somebody else's page. `SameSite=Lax`
+ * already blocks the common shapes, but it is one flag on one cookie, it does
+ * not separate this app from anything else on the same registrable domain, and
+ * it has carried browser-specific exceptions before. A second, independent
+ * check costs a string comparison.
+ *
+ * Bearer tokens are deliberately exempt, and that is not a hole: a browser
+ * never attaches an Authorization header on its own, so a request carrying one
+ * was written deliberately by whoever holds the key. Applying the check to API
+ * clients would break every legitimate one — none of them sends an Origin —
+ * while protecting nothing.
+ */
+export function sameOrigin(request: Request): NextResponse | null {
+  const method = request.method.toUpperCase();
+  // GET/HEAD must not change anything, so there is nothing to forge.
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return null;
+
+  // Authenticated by key, not by cookie: not reachable through a victim's
+  // browser, so not a cross-site request forgery risk.
+  if (request.headers.get('authorization')?.toLowerCase().startsWith('bearer ')) return null;
+
+  const origin = request.headers.get('origin');
+  const target = new URL(request.url).host;
+
+  if (origin) {
+    let sender: string;
+    try {
+      sender = new URL(origin).host;
+    } catch {
+      return csrfRefusal();
+    }
+    return sender === target ? null : csrfRefusal();
+  }
+
+  // No Origin. Browsers send it on every cross-origin state-changing request,
+  // so its absence usually means a non-browser client — but treating "absent"
+  // as "fine" would make the check opt-out for anyone who can suppress a
+  // header. Referer is the fallback; with neither, refuse.
+  const referer = request.headers.get('referer');
+  if (referer) {
+    try {
+      return new URL(referer).host === target ? null : csrfRefusal();
+    } catch {
+      return csrfRefusal();
+    }
+  }
+
+  return csrfRefusal();
+}
+
+function csrfRefusal(): NextResponse {
+  return NextResponse.json(
+    {
+      error:
+        'This request did not come from the UPC Scanning site. If you are using the ' +
+        'API directly, authenticate with an API key instead of a session cookie.',
+    },
+    { status: 403 },
+  );
+}

@@ -1,3 +1,4 @@
+import { sameOrigin } from '@/server/api/guard';
 import { currentGuest } from '@/server/guest/session';
 import { fail, handleError, notFound, ok } from '@/server/api/respond';
 import { renderAlternative } from '@/server/pipeline/process-product';
@@ -25,6 +26,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
+    const forged = sameOrigin(request);
+    if (forged) return forged;
+
     const session = await currentGuest();
     if (!session) return fail('Your guest session has expired. Start a new one.', 401);
 

@@ -1,4 +1,4 @@
-import { limit } from '@/server/api/guard';
+import { limit, sameOrigin } from '@/server/api/guard';
 import { LedgerReason } from '@prisma/client';
 import { z } from 'zod';
 
@@ -18,6 +18,9 @@ export async function POST(request: Request) {
   try {
     // New accounts arrive with free credits, so unlimited signups are
     // unlimited credits.
+    const forged = sameOrigin(request);
+    if (forged) return forged;
+
     const refused = limit(request, 'register');
     if (refused) return refused;
 

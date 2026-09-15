@@ -52,6 +52,12 @@ export async function setSessionCookie(token: string, expiresAt: Date): Promise<
   });
 }
 
+/** The raw session token this request arrived with, if any. */
+export async function currentSessionToken(): Promise<string | null> {
+  const store = await cookies();
+  return store.get(SESSION_COOKIE)?.value ?? null;
+}
+
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
   store.delete(SESSION_COOKIE);

@@ -1,3 +1,4 @@
+import { sameOrigin } from './guard';
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 
@@ -44,12 +45,22 @@ export function handleError(error: unknown): NextResponse {
   return fail('Something went wrong on our end. Please try again.', 500);
 }
 
-/** Wrap a handler so it always has an authenticated user. */
+/**
+ * Wrap a handler so it always has an authenticated user.
+ *
+ * The cross-origin check lives here rather than in each handler because it is
+ * the kind of protection that is only worth anything if it is impossible to
+ * forget. Every authenticated mutation goes through this wrapper, so every one
+ * of them gets it, including routes written after this comment.
+ */
 export function withUser<T extends unknown[]>(
   handler: (user: SessionUser, request: Request, ...args: T) => Promise<Response>,
 ) {
   return async (request: Request, ...args: T): Promise<Response> => {
     try {
+      const forged = sameOrigin(request);
+      if (forged) return forged;
+
       const user = await authenticate(request);
       if (!user) return unauthorized();
       return await handler(user, request, ...args);

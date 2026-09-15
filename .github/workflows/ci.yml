@@ -1,0 +1,120 @@
+name: CI
+
+# Every push and every pull request. With work going straight to main and
+# Railway deploying from it, this is the only thing standing between a bad
+# commit and production — so it has to run on the push itself, not just on
+# pull requests nobody opens.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a red main can be re-checked after a flaky run without an empty commit.
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes an older run irrelevant; cancel it rather than paying
+  # for both and waiting behind the stale one.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      # The suite must not depend on anything real. These exist because the
+      # config schema demands them at import time; they authenticate nothing,
+      # and any test that needs a live service is wrong.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      APP_URL: http://localhost:3000
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile, so CI cannot pass on a runtime production
+          # never sees.
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate Prisma client
+        # Everything else imports @prisma/client, so this comes before any
+        # step that compiles or runs the code.
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        # Catches what the others cannot: a route exporting something Next does
+        # not allow, a server import pulled into a client component. Both have
+        # bitten this codebase and neither shows up in tsc.
+        run: npm run build
+
+  migrations:
+    name: Migrations apply cleanly
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Apply every migration from empty
+        # A migration that only works against the author's database is found
+        # here rather than on the production boot that runs `migrate deploy`.
+        run: npx prisma migrate deploy
+
+      - name: Schema matches the migrations
+        # Compares the database the migrations just built against the schema
+        # the code is generated from. Catches a schema.prisma edited without a
+        # matching migration — which deploys clean and then fails at the first
+        # query against the column that was never created.
+        #
+        # Reading the live database rather than replaying the migration folder
+        # keeps this free of a shadow database, which Prisma resets and which
+        # would collide with the one migrate deploy just populated.
+        # --exit-code makes a non-empty diff a failure (2) rather than a pass.
+        run: |
+          npx prisma migrate diff \
+            --from-url "$DATABASE_URL" \
+            --to-schema-datamodel prisma/schema.prisma \
+            --exit-code

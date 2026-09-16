@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Badge, Button, Card, CardHeader, cn } from '@/components/ui';
+import { Badge, Button, Card, CardHeader, cn, inputClass } from '@/components/ui';
 
 /**
  * The setup page.
@@ -42,6 +42,13 @@ interface KeyTest {
   status?: number;
 }
 
+interface EmailTest {
+  state: string;
+  message: string;
+  from?: string;
+  detail?: string;
+}
+
 interface SearchTest {
   state: string;
   message: string;
@@ -72,6 +79,9 @@ export function SetupClient() {
   const [testing, setTesting] = useState(false);
   const [search, setSearch] = useState<SearchTest | null>(null);
   const [searching, setSearching] = useState(false);
+  const [mail, setMail] = useState<EmailTest | null>(null);
+  const [mailing, setMailing] = useState(false);
+  const [mailTo, setMailTo] = useState('');
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -134,6 +144,29 @@ export function SetupClient() {
       });
     } finally {
       setSearching(false);
+    }
+  }
+
+  /**
+   * Email fails in two places that look identical from outside: the key can be
+   * wrong, or the key can be fine while the sending domain is unverified — in
+   * which case nothing leaves and the app reports perfect health. A customer's
+   * first sign of that is a code that never arrives.
+   */
+  async function runEmailTest() {
+    setMailing(true);
+    try {
+      const response = await fetch('/api/setup/test-email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ to: mailTo }),
+      });
+      const body = (await response.json()) as EmailTest & { error?: string };
+      setMail(response.ok ? body : { state: 'failed', message: body.error ?? 'The check failed.' });
+    } catch {
+      setMail({ state: 'failed', message: 'The check did not reach the server.' });
+    } finally {
+      setMailing(false);
     }
   }
 
@@ -247,6 +280,47 @@ export function SetupClient() {
             ) : null}
           </div>
         ) : null}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Live email check"
+          description="Sends one real message. If it arrives, the API key and the sending domain are both correct — the two things that fail separately."
+        />
+        <div className="space-y-3 px-5 pb-5">
+          <div className="flex flex-wrap gap-2">
+            <input
+              id="test-email-to"
+              type="email"
+              value={mailTo}
+              onChange={(event) => setMailTo(event.target.value)}
+              placeholder="you@yourcompany.com"
+              className={cn(inputClass, 'min-w-0 flex-1')}
+            />
+            <Button size="sm" onClick={() => void runEmailTest()} disabled={mailing || !mailTo}>
+              {mailing ? 'Sending…' : 'Send test'}
+            </Button>
+          </div>
+
+          {mail ? (
+            <div
+              className={cn(
+                'rounded-xl border p-4 text-sm leading-relaxed',
+                mail.state === 'sent'
+                  ? 'border-positive/40 bg-positive-soft text-fg'
+                  : 'border-warning/40 bg-warning-soft text-fg',
+              )}
+            >
+              <p>{mail.message}</p>
+              {mail.detail ? (
+                <p className="mt-2 break-words font-mono text-xs text-muted">{mail.detail}</p>
+              ) : null}
+              {mail.from ? (
+                <p className="mt-2 text-xs text-subtle">Sending as: {mail.from}</p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </Card>
 
       <Card>
